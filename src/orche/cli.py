@@ -36,7 +36,7 @@ from .backend import (
     send_prompt,
     set_config_value,
 )
-from .notify import dispatch_payload
+from .notify import NotificationService, build_message_from_payload, load_notify_config, parse_payload
 from .paths import ensure_directories
 
 app = typer.Typer(
@@ -50,6 +50,62 @@ config_app = typer.Typer(help="Manage orche runtime configuration.")
 app.add_typer(config_app, name="config")
 console = Console()
 stderr = Console(stderr=True)
+
+
+def _bool_label(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+def _configured_label(value: str) -> str:
+    return "set" if str(value).strip() else "unset"
+
+
+def _print_notify_verbose(
+    *,
+    runtime_config: dict,
+    notify_config,
+    session: str,
+    channel_id: str,
+    payload_text: str,
+    message,
+) -> None:
+    console.print("notify config:")
+    console.print(f"  enabled: {_bool_label(notify_config.enabled)}")
+    console.print(f"  providers: {', '.join(notify_config.providers) or '-'}")
+    console.print(f"  discord.bot_token: {_configured_label(notify_config.discord.bot_token)}")
+    console.print(f"  discord.webhook_url: {_configured_label(notify_config.discord.webhook_url)}")
+    console.print(
+        "  discord.mention_user_id: "
+        f"{notify_config.discord.mention_user_id or '-'}"
+    )
+    console.print(
+        "  runtime.channel_id: "
+        f"{channel_id or runtime_config.get('discord_channel_id') or '-'}"
+    )
+    console.print(f"  runtime.session: {session or runtime_config.get('session') or '-'}")
+    console.print(f"  payload_bytes: {len(payload_text.encode('utf-8'))}")
+    parsed_payload = parse_payload(payload_text)
+    if parsed_payload is None:
+        console.print("  payload_json: invalid")
+    else:
+        event = (
+            parsed_payload.get("event")
+            or parsed_payload.get("type")
+            or parsed_payload.get("kind")
+            or parsed_payload.get("notification_type")
+            or parsed_payload.get("name")
+            or "-"
+        )
+        console.print(f"  payload_json: valid (event={event})")
+    if message is None:
+        console.print("notify message: <none>")
+        return
+    console.print("notify message:")
+    console.print(f"  channel_id: {message.channel_id or '-'}")
+    console.print(f"  session: {message.session or '-'}")
+    console.print(f"  status: {message.status or '-'}")
+    console.print("  content:")
+    console.print(message.content)
 
 
 def _session_name(name: Optional[str], cwd: Path, agent: str) -> str:
@@ -286,36 +342,89 @@ def notify_discord_hidden(
     session: Optional[str] = typer.Option(None, "--session", help="Explicit session override."),
     channel_id: Optional[str] = typer.Option(None, "--channel-id", help="Explicit Discord channel override."),
     status: str = typer.Option("success", "--status", help="Delivery status label."),
+    verbose: bool = typer.Option(False, "--verbose", help="Print config, payload, and delivery details."),
 ) -> None:
     try:
         payload_text = payload
         if payload_text is None and not sys.stdin.isatty():
             payload_text = sys.stdin.read()
-        results = dispatch_payload(
+        runtime_config = load_config()
+        resolved_channel_id = channel_id or os.environ.get("ORCHE_DISCORD_CHANNEL_ID", "")
+        resolved_session = session or os.environ.get("ORCHE_SESSION", "")
+        notify_config = load_notify_config(runtime_config)
+        message = build_message_from_payload(
             payload_text or "",
-            runtime_config=load_config(),
+            notify_config=notify_config,
+            runtime_config=runtime_config,
             summary_loader=latest_turn_summary,
-            explicit_channel_id=channel_id or os.environ.get("ORCHE_DISCORD_CHANNEL_ID", ""),
-            explicit_session=session or os.environ.get("ORCHE_SESSION", ""),
+            explicit_channel_id=resolved_channel_id,
+            explicit_session=resolved_session,
             status=status,
         )
-        if not results:
+        if verbose:
+            _print_notify_verbose(
+                runtime_config=runtime_config,
+                notify_config=notify_config,
+                session=resolved_session,
+                channel_id=resolved_channel_id,
+                payload_text=payload_text or "",
+                message=message,
+            )
+        if not notify_config.enabled:
+            console.print("notify skipped: notify.enabled is false")
             log_event(
                 "notify.skipped",
-                session=session or os.environ.get("ORCHE_SESSION", ""),
-                channel_id=channel_id or os.environ.get("ORCHE_DISCORD_CHANNEL_ID", ""),
+                reason="disabled",
+                session=resolved_session,
+                channel_id=resolved_channel_id,
             )
+            return
+        if message is None:
+            console.print("notify skipped: payload/config did not produce a deliverable message")
+            log_event(
+                "notify.skipped",
+                reason="message-none",
+                session=resolved_session,
+                channel_id=resolved_channel_id,
+            )
+            return
+        service = NotificationService()
+        results = service.send(message, notify_config)
+        if not results:
+            console.print("notify skipped: no notifier providers resolved")
+            log_event(
+                "notify.skipped",
+                reason="no-providers",
+                session=resolved_session or message.session,
+                channel_id=resolved_channel_id or message.channel_id,
+            )
+            return
+        has_failure = False
         for result in results:
+            state = "ok" if result.ok else "failed"
+            detail = result.detail or "-"
+            line = f"notify {state}: provider={result.provider} detail={detail}"
+            if result.ok:
+                console.print(line)
+            else:
+                stderr.print(line)
+                has_failure = True
             log_event(
                 "notify.delivery",
                 provider=result.provider,
                 ok=result.ok,
                 detail=result.detail,
-                session=session or os.environ.get("ORCHE_SESSION", ""),
-                channel_id=channel_id or os.environ.get("ORCHE_DISCORD_CHANNEL_ID", ""),
+                session=resolved_session or message.session,
+                channel_id=resolved_channel_id or message.channel_id,
             )
+        if has_failure:
+            raise typer.Exit(code=1)
+    except typer.Exit:
+        raise
     except Exception as exc:  # pragma: no cover
+        stderr.print(f"notify error: {exc}")
         log_exception("notify.error", exc)
+        raise typer.Exit(code=1)
 
 
 @app.command("history")

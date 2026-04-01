@@ -33,7 +33,7 @@ app = typer.Typer(
     name="orche",
     no_args_is_help=True,
     rich_markup_mode="rich",
-    help="Modern CLI for tmux + tmux-bridge Codex orchestration.",
+    help="Modern CLI for tmux-backed Codex orchestration with tmux-bridge.",
     add_completion=False,
 )
 console = Console()

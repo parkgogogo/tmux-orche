@@ -1,8 +1,8 @@
-# orche
+# tmux-orche
 
-Modern tmux-backed orchestration for persistent Codex CLI sessions.
+Modern tmux-backed Codex orchestration for persistent CLI sessions.
 
-`orche` turns a one-off `orch.py` script into an installable Python CLI with a clean command surface, XDG-based configuration, and a reusable tmux + `tmux-bridge` backend for long-lived Codex work sessions.
+`tmux-orche` turns a one-off `orch.py` script into an installable Python CLI with a clean command surface, XDG-based configuration, and a reusable tmux + `tmux-bridge` backend for long-lived Codex orchestration sessions.
 
 ## Features
 
@@ -19,7 +19,7 @@ Modern tmux-backed orchestration for persistent Codex CLI sessions.
 From PyPI:
 
 ```bash
-pip install orche
+pip install tmux-orche
 ```
 
 From a local checkout:
@@ -33,7 +33,7 @@ pip install .
 As a tool:
 
 ```bash
-uv tool install orche
+uv tool install tmux-orche
 ```
 
 From a local checkout:
@@ -51,7 +51,7 @@ uv pip install .
 ### Install from source
 
 ```bash
-git clone <your-repo-url> orche
+git clone https://github.com/parkgogogo/orche
 cd orche
 python3 -m venv .venv
 source .venv/bin/activate
@@ -146,7 +146,7 @@ orche prompt --help
 
 ## Configuration
 
-`orche` follows the XDG Base Directory convention.
+`tmux-orche` follows the XDG Base Directory convention.
 
 Config file:
 

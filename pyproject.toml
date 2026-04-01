@@ -3,9 +3,9 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "orche"
+name = "tmux-orche"
 version = "0.1.0"
-description = "Typer-based CLI for tmux-backed Codex orchestration"
+description = "Typer-based CLI for tmux-backed Codex orchestration sessions"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [

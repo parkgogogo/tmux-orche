@@ -15,7 +15,7 @@ The pattern is:
 3. `orche` returns immediately.
 4. OpenClaw stops waiting, so it does not keep burning tokens while Codex works.
 5. Codex continues in the background inside tmux.
-6. When the task completes, a notify hook posts the result back to Discord.
+6. When the task completes, a notify hook posts the result back to the same Discord channel.
 
 This fire-and-forget model is the core value of `tmux-orche`: it lets OpenClaw hand off long-running Codex work while keeping OpenClaw's own token usage low.
 
@@ -28,7 +28,7 @@ The intended production workflow looks like this:
 3. OpenClaw calls `orche session-new` and `orche prompt`.
 4. `orche` returns immediately, and OpenClaw ends the turn.
 5. Codex keeps running in a persistent tmux session in the background.
-6. A notify hook sends a completion message to a Discord notify channel.
+6. A notify hook sends a completion message back to the same Discord channel.
 7. The user sees the notification and can continue the conversation.
 
 This is why tmux persistence matters: the Codex process survives after OpenClaw has already returned control to Discord.
@@ -49,13 +49,14 @@ This is why tmux persistence matters: the Codex process survives after OpenClaw 
 The core OpenClaw + Codex workflow assumes a Discord server with:
 
 - one Discord Guild
-- one main channel such as `#coding`, where OpenClaw listens for user messages
-- one notify channel such as `#codex-notify`, where Codex completion messages are posted
+- one channel such as `#coding`, used for both:
+  - OpenClaw receiving user messages
+  - Codex posting completion notifications back into the same channel
 
 It also assumes two Discord bots:
 
-- `OpenClaw Bot`: receives user messages in the main channel and calls `orche`
-- `Codex Notify Bot`: posts completion notifications after Codex finishes
+- `OpenClaw Bot`: receives user messages in that channel and calls `orche`
+- `Codex Notify Bot`: posts completion notifications back into that same channel after Codex finishes
 
 ### OpenClaw Configuration
 
@@ -114,7 +115,7 @@ Codex runs in background
 notify hook
     |
     v
-Codex Notify Bot -> Discord notify channel (#codex-notify)
+Codex Notify Bot -> same Discord channel (#coding)
 ```
 
 ### End-to-End Flow
@@ -124,7 +125,7 @@ Codex Notify Bot -> Discord notify channel (#codex-notify)
 3. OpenClaw starts or reuses a Codex tmux session through `orche`.
 4. OpenClaw sends the task to Codex and exits immediately.
 5. Codex works asynchronously in tmux.
-6. A notify hook posts the result to the notify channel.
+6. A notify hook posts the result back to the same channel.
 7. The user receives the completion signal without OpenClaw holding the entire session open.
 
 ## Installation

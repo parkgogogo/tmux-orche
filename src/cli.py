@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional
 
+import click
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -41,7 +43,7 @@ from version import __version__
 
 app = typer.Typer(
     name="orche",
-    no_args_is_help=True,
+    no_args_is_help=False,
     rich_markup_mode="rich",
     help="Modern CLI for tmux-backed Codex orchestration with tmux-bridge.",
     add_completion=False,
@@ -50,6 +52,8 @@ config_app = typer.Typer(help="Manage orche runtime configuration.")
 app.add_typer(config_app, name="config")
 console = Console()
 stderr = Console(stderr=True)
+
+_UNKNOWN_COMMAND = re.compile(r"No such command ['\"]?(?P<command>[^'\".]+)['\"]?\.")
 
 
 def _bool_label(value: bool) -> str:
@@ -112,14 +116,60 @@ def _session_name(name: Optional[str], cwd: Path, agent: str) -> str:
     return name or default_session_name(cwd.resolve(), agent, "main")
 
 
+def _format_click_message(exc: click.ClickException) -> str:
+    message = getattr(exc, "message", "") or ""
+    match = _UNKNOWN_COMMAND.search(message)
+    if match:
+        return f"Unknown command: {match.group('command')}"
+    return exc.format_message().strip()
+
+
+def _format_error_detail(exc: BaseException) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        return (exc.stderr or "").strip() or str(exc)
+    if isinstance(exc, click.ClickException):
+        return _format_click_message(exc)
+    return str(exc)
+
+
 def _handle_error(exc: BaseException) -> None:
     if isinstance(exc, subprocess.CalledProcessError):
         log_exception("subprocess.error", exc, cmd=exc.cmd, returncode=exc.returncode)
-        detail = (exc.stderr or "").strip() or str(exc)
-    else:
-        detail = str(exc)
+    detail = _format_error_detail(exc)
     stderr.print(f"[bold red]Error:[/bold red] {detail}")
     raise typer.Exit(code=1)
+
+
+def _print_error(exc: BaseException) -> None:
+    detail = _format_error_detail(exc)
+    stderr.print(f"[bold red]Error:[/bold red] {detail}")
+
+
+def _resolve_path(value: Optional[Path], *, must_exist: bool = False, require_dir: bool = False) -> Optional[Path]:
+    if value is None:
+        return None
+    path = value.expanduser()
+    if must_exist and not path.exists():
+        raise typer.BadParameter(f"Path does not exist: {value}")
+    if require_dir and not path.is_dir():
+        raise typer.BadParameter(f"Directory does not exist: {value}")
+    return path.resolve()
+
+
+def _resolve_cwd(
+    _ctx: typer.Context,
+    _param: typer.CallbackParam,
+    value: Optional[Path],
+) -> Optional[Path]:
+    return _resolve_path(value, must_exist=True, require_dir=True)
+
+
+def _resolve_optional_path(
+    _ctx: typer.Context,
+    _param: typer.CallbackParam,
+    value: Optional[Path],
+) -> Optional[Path]:
+    return _resolve_path(value)
 
 
 def _render_status(info: dict) -> None:
@@ -147,13 +197,17 @@ def _render_status(info: dict) -> None:
     console.print(Panel.fit(body, title="orche status", border_style="blue"))
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main_callback(
+    ctx: typer.Context,
     version: Optional[bool] = typer.Option(None, "--version", help="Show version and exit."),
 ) -> None:
     ensure_directories()
     if version:
         console.print(f"orche {__version__}")
+        raise typer.Exit()
+    if ctx.invoked_subcommand is None:
+        console.print(ctx.get_help())
         raise typer.Exit()
 
 
@@ -199,10 +253,10 @@ def config_list() -> None:
 
 @app.command("session-new")
 def session_new(
-    cwd: Path = typer.Option(..., exists=True, file_okay=False, dir_okay=True, resolve_path=True, help="Working directory for the Codex session."),
+    cwd: Path = typer.Option(..., callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help="Working directory for the Codex session."),
     agent: str = typer.Option(..., help="Agent name. Currently only 'codex' is supported."),
     name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-main."),
-    codex_home: Optional[Path] = typer.Option(None, "--codex-home", resolve_path=True, help="Optional manual CODEX_HOME override. If omitted, orche manages /tmp/orche-codex-<session> automatically."),
+    codex_home: Optional[Path] = typer.Option(None, "--codex-home", callback=_resolve_optional_path, resolve_path=False, help="Optional manual CODEX_HOME override. If omitted, orche manages /tmp/orche-codex-<session> automatically."),
     discord_channel_id: Optional[str] = typer.Option(None, "--discord-channel-id", help="Numeric Discord channel ID to send completion notifications back to."),
 ) -> None:
     try:
@@ -455,9 +509,14 @@ def main() -> int:
         app(standalone_mode=False)
     except typer.Exit as exc:
         return int(exc.exit_code or 0)
+    except click.ClickException as exc:
+        _print_error(exc)
+        return 1
     except (OrcheError, subprocess.CalledProcessError) as exc:
-        _handle_error(exc)
+        _print_error(exc)
+        return 1
     except Exception as exc:  # pragma: no cover
         log_exception("cli.error", exc)
-        _handle_error(exc)
+        _print_error(exc)
+        return 1
     return 0

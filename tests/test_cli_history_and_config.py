@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import sys
+
 from typer.testing import CliRunner
 
 import backend
+import cli
 from cli import app
 
 
@@ -56,3 +61,41 @@ def test_config_supports_discord_mention_user_id(xdg_runtime):
     assert list_result.exit_code == 0
     assert "discord.mention-user-id" in list_result.stdout
     assert "123456" in list_result.stdout
+
+
+def test_version_works_without_subcommand(xdg_runtime):
+    result = CliRunner().invoke(app, ["--version"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip().startswith("orche ")
+
+
+def test_session_new_expands_cwd_user_home(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+    captured: dict[str, Path] = {}
+
+    def fake_ensure_session(session, cwd, agent, **kwargs):
+        captured["session"] = session
+        captured["cwd"] = cwd
+        captured["agent"] = agent
+        return "%1"
+
+    monkeypatch.setattr(cli, "ensure_session", fake_ensure_session)
+    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
+
+    result = runner.invoke(app, ["session-new", "--cwd", "~/project", "--agent", "codex"])
+
+    assert result.exit_code == 0
+    assert captured["cwd"] == project_dir.resolve()
+    assert captured["agent"] == "codex"
+
+
+def test_unknown_command_shows_clean_error(xdg_runtime, capsys, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["orche", "invalidcmd"])
+    exit_code = cli.main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Error: Unknown command: invalidcmd" in captured.err

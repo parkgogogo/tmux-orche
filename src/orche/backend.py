@@ -856,7 +856,14 @@ def ensure_session(
     discord_channel_id: Optional[str] = None,
     discord_session: Optional[str] = None,
 ) -> str:
+    cwd = cwd.resolve()
     existing_meta = load_meta(session)
+    existing_cwd = Path(str(existing_meta.get("cwd") or "")).resolve() if existing_meta.get("cwd") else None
+    if existing_cwd is not None and existing_cwd != cwd:
+        raise OrcheError(
+            f"Session {session} is already bound to cwd={existing_cwd}. "
+            "Use the same --cwd or close the session and create a new one."
+        )
     resolved_discord_channel_id = discord_channel_id or str(existing_meta.get("discord_channel_id") or "")
     resolved_discord_session = (
         discord_session

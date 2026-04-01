@@ -7,12 +7,14 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 import traceback
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
+from .notify_hook import NOTIFY_DISCORD_SH
 from .paths import config_path, ensure_directories, history_dir, locks_dir, meta_dir, orch_log_path
 
 BACKEND = "smux"
@@ -34,6 +36,8 @@ READY_SURFACE_HINTS = (
     "Ctrl-C to interrupt",
 )
 TMUX_BRIDGE_FALLBACK = Path.home() / ".smux" / "bin" / "tmux-bridge"
+DEFAULT_CODEX_HOME_ROOT = Path(tempfile.gettempdir())
+DEFAULT_CODEX_SOURCE_HOME = Path.home() / ".codex"
 CONFIG_KEY_MAP = {
     "discord.bot-token": "discord_bot_token",
     "discord.channel-id": "discord_channel_id",
@@ -171,6 +175,60 @@ def window_name(session: str) -> str:
 
 def session_key(session: str) -> str:
     return slugify(session)
+
+
+def default_codex_home_path(session: str) -> Path:
+    return DEFAULT_CODEX_HOME_ROOT / f"orche-codex-{session_key(session)}"
+
+
+def default_notify_hook_path(codex_home: Path) -> Path:
+    return codex_home / "hooks" / "discord-turn-notify.sh"
+
+
+def render_notify_command(hook_path: Path, *, session: str, discord_channel_id: Optional[str]) -> str:
+    values = ["/bin/bash", str(hook_path), "--session", session]
+    if discord_channel_id:
+        values.extend(["--channel-id", validate_discord_channel_id(discord_channel_id)])
+    return "notify = [" + ", ".join(json.dumps(value) for value in values) + "]"
+
+
+def write_notify_hook(hook_path: Path) -> None:
+    hook_path.parent.mkdir(parents=True, exist_ok=True)
+    hook_path.write_text(NOTIFY_DISCORD_SH, encoding="utf-8")
+    hook_path.chmod(0o755)
+
+
+def rewrite_codex_config(codex_home: Path, *, session: str, discord_channel_id: Optional[str]) -> None:
+    config_toml_path = codex_home / "config.toml"
+    notify_line = render_notify_command(
+        default_notify_hook_path(codex_home),
+        session=session,
+        discord_channel_id=discord_channel_id,
+    )
+    if config_toml_path.exists():
+        content = config_toml_path.read_text(encoding="utf-8")
+    else:
+        content = ""
+    if re.search(r"(?m)^notify\s*=.*$", content):
+        updated = re.sub(r"(?m)^notify\s*=.*$", notify_line, content, count=1)
+    else:
+        updated = content.rstrip()
+        if updated:
+            updated += "\n\n"
+        updated += notify_line + "\n"
+    config_toml_path.write_text(updated, encoding="utf-8")
+
+
+def ensure_managed_codex_home(session: str, *, discord_channel_id: Optional[str]) -> Path:
+    target = default_codex_home_path(session)
+    if not target.exists():
+        if DEFAULT_CODEX_SOURCE_HOME.exists():
+            shutil.copytree(DEFAULT_CODEX_SOURCE_HOME, target)
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+    write_notify_hook(default_notify_hook_path(target))
+    rewrite_codex_config(target, session=session, discord_channel_id=discord_channel_id)
+    return target
 
 
 def history_path(session: str) -> Path:
@@ -377,6 +435,7 @@ def load_config() -> Dict[str, Any]:
         "session": "",
         "discord_session": "",
         "codex_home": "",
+        "codex_home_managed": False,
     }
     path = config_path()
     if not path.exists():
@@ -467,6 +526,7 @@ def update_runtime_config(
     agent: str,
     pane_id: str,
     codex_home: Optional[str] = None,
+    codex_home_managed: Optional[bool] = None,
     discord_channel_id: Optional[str] = None,
     discord_session: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -487,6 +547,8 @@ def update_runtime_config(
     config["agent"] = agent
     config["pane_id"] = pane_id
     config["codex_home"] = normalize_codex_home(codex_home)
+    if codex_home_managed is not None:
+        config["codex_home_managed"] = bool(codex_home_managed)
     config["updated_at"] = time.time()
     save_config(config)
     return config
@@ -667,13 +729,24 @@ def is_codex_running(pane_id: str) -> bool:
     return False
 
 
-def build_codex_command(cwd: Path, *, approve_all: bool, codex_home: Optional[str] = None) -> str:
+def build_codex_command(
+    cwd: Path,
+    *,
+    approve_all: bool,
+    codex_home: Optional[str] = None,
+    session: Optional[str] = None,
+    discord_channel_id: Optional[str] = None,
+) -> str:
     _ = approve_all
     prefix: List[str] = [f"cd {shlex.quote(str(cwd))}"]
     normalized_codex_home = normalize_codex_home(codex_home)
     if normalized_codex_home:
         prefix.append(f"mkdir -p {shlex.quote(normalized_codex_home)}")
         prefix.append(f"export CODEX_HOME={shlex.quote(normalized_codex_home)}")
+    if session:
+        prefix.append(f"export ORCHE_SESSION={shlex.quote(session)}")
+    if discord_channel_id:
+        prefix.append(f"export ORCHE_DISCORD_CHANNEL_ID={shlex.quote(validate_discord_channel_id(discord_channel_id))}")
     command = ["codex", "--no-alt-screen", "-C", str(cwd)]
     command.append("--dangerously-bypass-approvals-and-sandbox")
     prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
@@ -710,6 +783,7 @@ def ensure_codex_running(
     *,
     approve_all: bool = False,
     codex_home: Optional[str] = None,
+    discord_channel_id: Optional[str] = None,
 ) -> str:
     if is_codex_running(pane_id):
         return pane_id
@@ -727,7 +801,13 @@ def ensure_codex_running(
         "-t",
         pane_id,
         "-l",
-        build_codex_command(cwd, approve_all=approve_all, codex_home=codex_home),
+        build_codex_command(
+            cwd,
+            approve_all=approve_all,
+            codex_home=codex_home,
+            session=session,
+            discord_channel_id=discord_channel_id,
+        ),
         check=True,
         capture=True,
     )
@@ -777,7 +857,23 @@ def ensure_session(
     discord_session: Optional[str] = None,
 ) -> str:
     existing_meta = load_meta(session)
-    resolved_codex_home = normalize_codex_home(codex_home or str(existing_meta.get("codex_home") or ""))
+    resolved_discord_channel_id = discord_channel_id or str(existing_meta.get("discord_channel_id") or "")
+    resolved_discord_session = (
+        discord_session
+        or str(existing_meta.get("discord_session") or "")
+        or (derive_discord_session(resolved_discord_channel_id) if resolved_discord_channel_id else "")
+    )
+    managed_codex_home = False
+    if codex_home:
+        resolved_codex_home = normalize_codex_home(codex_home)
+    elif existing_meta.get("codex_home"):
+        resolved_codex_home = normalize_codex_home(str(existing_meta.get("codex_home") or ""))
+        managed_codex_home = bool(existing_meta.get("codex_home_managed"))
+    else:
+        resolved_codex_home = str(ensure_managed_codex_home(session, discord_channel_id=resolved_discord_channel_id))
+        managed_codex_home = True
+    if managed_codex_home:
+        resolved_codex_home = str(ensure_managed_codex_home(session, discord_channel_id=resolved_discord_channel_id))
     existing_codex_home = normalize_codex_home(str(existing_meta.get("codex_home") or ""))
     if existing_codex_home and resolved_codex_home and existing_codex_home != resolved_codex_home:
         raise OrcheError(
@@ -791,6 +887,7 @@ def ensure_session(
         pane_id,
         approve_all=approve_all,
         codex_home=resolved_codex_home,
+        discord_channel_id=resolved_discord_channel_id,
     )
     meta = load_meta(session)
     meta.update(
@@ -801,7 +898,9 @@ def ensure_session(
             "agent": agent,
             "pane_id": pane_id,
             "codex_home": resolved_codex_home,
-            "discord_session": discord_session or meta.get("discord_session") or "",
+            "codex_home_managed": managed_codex_home,
+            "discord_channel_id": resolved_discord_channel_id,
+            "discord_session": resolved_discord_session,
             "last_seen_at": time.time(),
         }
     )
@@ -812,8 +911,9 @@ def ensure_session(
         agent=agent,
         pane_id=pane_id,
         codex_home=resolved_codex_home,
-        discord_channel_id=discord_channel_id,
-        discord_session=discord_session,
+        codex_home_managed=managed_codex_home,
+        discord_channel_id=resolved_discord_channel_id,
+        discord_session=resolved_discord_session,
     )
     return pane_id
 
@@ -889,6 +989,7 @@ def build_status(session: str) -> Dict[str, Any]:
         "cwd": cwd,
         "agent": agent,
         "codex_home": str(meta.get("codex_home") or ""),
+        "codex_home_managed": bool(meta.get("codex_home_managed")),
         "pane_id": pane_id or "-",
         "window_name": (info or {}).get("window_name", meta.get("window_name", "-")),
         "codex_running": bool(pane_id and is_codex_running(pane_id)),
@@ -925,5 +1026,19 @@ def close_session(session: str) -> str:
         info = get_pane_info(pane_id)
         if info is not None:
             tmux("kill-window", "-t", info["window_id"], check=False, capture=True)
+    if bool(meta.get("codex_home_managed")):
+        codex_home = normalize_codex_home(str(meta.get("codex_home") or ""))
+        if codex_home:
+            shutil.rmtree(codex_home, ignore_errors=True)
+    config = load_config()
+    if str(config.get("session") or "") == session:
+        config["session"] = ""
+        config["cwd"] = ""
+        config["agent"] = ""
+        config["pane_id"] = ""
+        config["codex_home"] = ""
+        config["codex_home_managed"] = False
+        config["updated_at"] = time.time()
+        save_config(config)
     remove_meta(session)
     return pane_id or "-"

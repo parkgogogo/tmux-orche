@@ -1,4 +1,7 @@
-#!/bin/bash
+from __future__ import annotations
+
+
+NOTIFY_DISCORD_SH = r"""#!/bin/bash
 
 set -euo pipefail
 
@@ -330,3 +333,4 @@ curl \
   >/dev/null 2>&1 || true
 
 exit 0
+"""

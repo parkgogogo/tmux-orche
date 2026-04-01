@@ -78,6 +78,8 @@ def _render_status(info: dict) -> None:
     if info.get("codex_home"):
         body.append("\nCODEX_HOME: ", style="bold cyan")
         body.append(str(info["codex_home"]))
+        body.append("\nManaged: ", style="bold cyan")
+        body.append("yes" if info.get("codex_home_managed") else "no")
     if info.get("discord_session"):
         body.append("\nDiscord session: ", style="bold cyan")
         body.append(str(info["discord_session"]))
@@ -139,7 +141,7 @@ def session_new(
     cwd: Path = typer.Option(..., exists=True, file_okay=False, dir_okay=True, resolve_path=True, help="Working directory for the Codex session."),
     agent: str = typer.Option(..., help="Agent name. Currently only 'codex' is supported."),
     name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-main."),
-    codex_home: Optional[Path] = typer.Option(None, "--codex-home", resolve_path=True, help="Optional CODEX_HOME directory for this Codex session."),
+    codex_home: Optional[Path] = typer.Option(None, "--codex-home", resolve_path=True, help="Optional manual CODEX_HOME override. If omitted, orche manages /tmp/orche-codex-<session> automatically."),
     discord_channel_id: Optional[str] = typer.Option(None, "--discord-channel-id", help="Numeric Discord channel ID to send completion notifications back to."),
 ) -> None:
     try:

@@ -31,7 +31,15 @@ In practice:
 
 For multi-session or multi-channel setups, the practical workaround is `CODEX_HOME`.
 
-`tmux-orche` supports this with `--codex-home`, so each session can launch Codex with a different config directory.
+By default, `tmux-orche` manages this automatically:
+
+- it creates `/tmp/orche-codex-<session>/`
+- it copies the contents of `~/.codex/` into that directory
+- it rewrites the copied `config.toml` notify entry for the current session and channel
+- it launches Codex with `CODEX_HOME` pointing at that temporary directory
+- it removes the temporary directory when the session is closed
+
+`--codex-home` remains available as an advanced manual override, but it is no longer required for the normal workflow.
 
 ## Primary Use Case
 
@@ -209,15 +217,7 @@ orche session-new \
   --discord-channel-id 123456789012345678
 ```
 
-Create a session with an isolated `CODEX_HOME`:
-
-```bash
-orche session-new \
-  --cwd /path/to/repo \
-  --agent codex \
-  --name repo-codex-main \
-  --codex-home ~/.codex-orche-repo-codex-main
-```
+By default, `orche` will automatically create and manage a temporary `CODEX_HOME` under `/tmp/orche-codex-<session>/`.
 
 Send a prompt into an existing session:
 
@@ -323,6 +323,7 @@ The runtime config stores fields such as:
 - resolved `discord_session`
 - `codex_turn_complete_channel_id`
 - `codex_home`
+- `codex_home_managed`
 - current `cwd`, `agent`, and `pane_id`
 
 Notification hooks and helper scripts should read `~/.config/orche/config.json` or use `orche config get ...`.
@@ -344,50 +345,43 @@ Supported config keys:
 - `discord.webhook-url`
 - `notify.enabled`
 
-## Multi-Session Codex Configuration
+## Auto-Managed CODEX_HOME
 
-If you need multiple concurrent Codex instances with different notify hooks or different Codex configs, use `--codex-home`.
+Each `orche` session gets its own Codex home automatically.
 
-Example:
+For a session named `repo-codex-main`, `orche` will use a path like:
 
-```bash
-orche session-new \
-  --cwd /path/to/repo-a \
-  --agent codex \
-  --name channel-a \
-  --codex-home ~/.codex-orche-channel-a \
-  --discord-channel-id 111111111111111111
-
-orche session-new \
-  --cwd /path/to/repo-b \
-  --agent codex \
-  --name channel-b \
-  --codex-home ~/.codex-orche-channel-b \
-  --discord-channel-id 222222222222222222
+```text
+/tmp/orche-codex-repo-codex-main/
 ```
 
-This allows:
+On `session-new`, `orche` will:
+
+1. create the temporary directory if it does not already exist
+2. copy the contents of `~/.codex/` into it
+3. write a session-specific `hooks/discord-turn-notify.sh`
+4. rewrite the copied `config.toml` so the notify command targets the current session and channel
+5. launch Codex with `CODEX_HOME` set to that directory
+
+On `close`, `orche` removes the auto-managed temporary directory.
+
+This gives you:
 
 - one `CODEX_HOME` per session
-- one `config.toml` per session
-- different notify settings per session
-- different Codex history/session state per session
+- one copied `config.toml` per session
+- isolated notify settings per session
+- isolated Codex history and session state per session
 
-Tradeoffs:
-
-- each session needs its own `CODEX_HOME` directory
-- configuration becomes distributed across multiple directories
-- you are responsible for preparing the `config.toml` and any required Codex state inside that directory
-
-`tmux-orche` only injects `CODEX_HOME` before launching Codex. It does not manage or synchronize the contents of those directories.
+If you need full manual control, `--codex-home` is still available as an advanced override.
 
 ## Notification Workflow
 
-`tmux-orche` is designed to work with the existing Codex native notify pipeline. This repository also includes a local hook variant at [`scripts/notify-discord.sh`](./scripts/notify-discord.sh), adapted from the mature `discord-turn-notify.sh` design without modifying the original script in `~/.codex/hooks/`.
+`tmux-orche` uses the existing Codex native notify pipeline, but in the default workflow it manages a per-session copied hook automatically. This repository also includes the source hook variant at [`scripts/notify-discord.sh`](./scripts/notify-discord.sh), which `orche` writes into each managed `CODEX_HOME`.
 
 ### What `orche` Provides
 
 - `orche session-new` writes the active session context to `~/.config/orche/config.json`
+- `orche session-new` creates a per-session temporary `CODEX_HOME` and rewrites its `config.toml`
 - `orche turn-summary --session <name>` exposes the current turn-summary logic in a CLI-friendly way
 - `orche _turn-summary --session <name>` is also available as a hidden compatibility alias
 - `orche config get/set/list` provides a stable interface for notification secrets and channel settings
@@ -398,59 +392,13 @@ This keeps the responsibility split cleanly:
 - the hook handles external delivery
 - `orche` provides session metadata and summary extraction
 
-### Codex Native Notify Setup
+### Automatic Notify Setup
 
-In `~/.codex/config.toml`:
+The default flow is automatic.
 
-```toml
-notify = ["/bin/bash", "/Users/dnq/.codex/hooks/discord-turn-notify.sh"]
-```
-
-That hook can then read `~/.config/orche/config.json`, inspect the Codex payload, and post to Discord.
-
-If you want to use the repo-local adapted hook instead, point Codex at:
-
-```toml
-notify = ["/bin/bash", "/path/to/orche/scripts/notify-discord.sh"]
-```
-
-### Codex Notify Setup
-
-Automatic setup is intentionally not built into `orche`.
-
-Reasons:
-
-- `~/.codex/config.toml` is global user config, not repo-local state
-- users may already have a custom `notify` pipeline that should not be overwritten
-- Discord bot tokens are sensitive and should not be silently written into scripts or config files
-
-The recommended setup is manual and explicit.
-
-1. Ensure `~/.codex/config.toml` exists.
-
-2. Add the notify hook entry:
-
-```toml
-notify = ["/bin/bash", "/Users/dnq/.codex/hooks/discord-turn-notify.sh"]
-```
-
-3. Create `~/.codex/hooks/discord-turn-notify.sh` if it does not already exist.
-
-4. In that hook:
-   - read `~/.config/orche/config.json` to get `codex_turn_complete_channel_id`, `session`, and `cwd`
-   - read the Codex JSON payload passed into the hook
-   - call `orche turn-summary --session "$session"` when you need a concise completion summary
-
-5. Provide secrets safely:
-   - prefer `orche config set discord.bot-token ...` or `DISCORD_BOT_TOKEN`
-   - avoid hardcoding tokens into tracked files
-   - set `discord.channel-id` with `orche config set` or via `orche session-new --discord-channel-id ...`
-
-Example shell pattern:
+When you run:
 
 ```bash
-orche config set discord.bot-token "your-token"
-orche config set discord.channel-id "123456789012345678"
 orche session-new \
   --cwd /path/to/repo \
   --agent codex \
@@ -458,13 +406,36 @@ orche session-new \
   --discord-channel-id 123456789012345678
 ```
 
-Then inside the hook:
+`orche` will:
+
+1. copy `~/.codex/` into `/tmp/orche-codex-repo-codex-main/`
+2. write `hooks/discord-turn-notify.sh` into that copied home
+3. rewrite the copied `config.toml` so the notify command passes the current session and channel
+4. start Codex with `CODEX_HOME=/tmp/orche-codex-repo-codex-main/`
+
+This means your global `~/.codex/config.toml` acts as the base template, but each running session gets its own isolated notify configuration automatically.
+
+### What You Still Need To Configure
+
+You still need:
+
+- a valid base `~/.codex/` directory for copying
+- Discord credentials via:
+  - `orche config set discord.bot-token ...`
+  - or `DISCORD_BOT_TOKEN`
+- a Discord channel ID via:
+  - `orche config set discord.channel-id ...`
+  - or `orche session-new --discord-channel-id ...`
+
+Example:
 
 ```bash
-session="$(jq -r '.session // ""' ~/.config/orche/config.json)"
-summary="$(orche turn-summary --session "$session" 2>/dev/null || true)"
-channel_id="$(orche config get discord.channel-id)"
-bot_token="${DISCORD_BOT_TOKEN:-$(orche config get discord.bot-token)}"
+orche config set discord.bot-token "your-token"
+orche session-new \
+  --cwd /path/to/repo \
+  --agent codex \
+  --name repo-codex-main \
+  --discord-channel-id 123456789012345678
 ```
 
 ### Using `orche` with the Existing Hook
@@ -485,7 +456,7 @@ orche session-new \
 orche prompt --session repo-codex-main --prompt "review the latest changes"
 ```
 
-3. When Codex emits a native notify event, the hook reads:
+3. When Codex emits a native notify event, the copied session-specific hook reads:
 
 - `codex_turn_complete_channel_id`
 - `session`
@@ -493,7 +464,7 @@ orche prompt --session repo-codex-main --prompt "review the latest changes"
 - `agent`
 - `pane_id`
 
-from `~/.config/orche/config.json`.
+from the current session context and `~/.config/orche/config.json`.
 
 4. If the hook needs a short completion summary, it should call:
 
@@ -503,7 +474,7 @@ orche turn-summary --session repo-codex-main
 
 ### Hook Integration Note
 
-If your current hook still shells out to the old `orch.py _turn-summary`, update that call site to:
+If you are maintaining a custom hook and it still shells out to the old `orch.py _turn-summary`, update that call site to:
 
 ```bash
 orche turn-summary --session "$session"

@@ -31,7 +31,15 @@ Codex 不支持通过 CLI 参数直接指定任意配置文件路径。
 
 如果要支持多会话或多频道并发，实际可行的替代方案是 `CODEX_HOME`。
 
-`tmux-orche` 通过 `--codex-home` 支持这一点，因此每个会话都可以用不同的配置目录启动 Codex。
+默认情况下，`tmux-orche` 会自动管理它：
+
+- 在 `/tmp/orche-codex-<session>/` 创建目录
+- 将 `~/.codex/` 的内容复制到该目录
+- 为当前 session 和频道重写复制后的 `config.toml` 中的 notify 配置
+- 使用该临时目录作为 `CODEX_HOME` 启动 Codex
+- 在 session 关闭时删除该临时目录
+
+`--codex-home` 仍然保留为高级覆盖项，但普通工作流不再需要它。
 
 ## 核心使用场景
 
@@ -209,15 +217,7 @@ orche session-new \
   --discord-channel-id 123456789012345678
 ```
 
-创建一个带独立 `CODEX_HOME` 的会话：
-
-```bash
-orche session-new \
-  --cwd /path/to/repo \
-  --agent codex \
-  --name repo-codex-main \
-  --codex-home ~/.codex-orche-repo-codex-main
-```
+默认情况下，`orche` 会自动在 `/tmp/orche-codex-<session>/` 下创建并管理临时 `CODEX_HOME`。
 
 向已有会话发送 prompt：
 
@@ -323,6 +323,7 @@ orche prompt --help
 - 已解析的 `discord_session`
 - `codex_turn_complete_channel_id`
 - `codex_home`
+- `codex_home_managed`
 - 当前 `cwd`、`agent` 和 `pane_id`
 
 通知 hook 和辅助脚本应读取 `~/.config/orche/config.json`，或直接使用 `orche config get ...`。
@@ -344,50 +345,43 @@ orche config list
 - `discord.webhook-url`
 - `notify.enabled`
 
-## 多会话 Codex 配置
+## 自动管理的 CODEX_HOME
 
-如果你需要多个并发 Codex 实例，并且它们使用不同的 notify hook 或不同的 Codex 配置，可以使用 `--codex-home`。
+每个 `orche` session 都会自动拥有自己的 Codex home。
 
-示例：
+例如，对于名为 `repo-codex-main` 的 session，`orche` 会使用类似下面的路径：
 
-```bash
-orche session-new \
-  --cwd /path/to/repo-a \
-  --agent codex \
-  --name channel-a \
-  --codex-home ~/.codex-orche-channel-a \
-  --discord-channel-id 111111111111111111
-
-orche session-new \
-  --cwd /path/to/repo-b \
-  --agent codex \
-  --name channel-b \
-  --codex-home ~/.codex-orche-channel-b \
-  --discord-channel-id 222222222222222222
+```text
+/tmp/orche-codex-repo-codex-main/
 ```
 
-这样可以实现：
+执行 `session-new` 时，`orche` 会：
+
+1. 如果目录不存在，则创建该临时目录
+2. 将 `~/.codex/` 的内容复制进去
+3. 写入一份 session 专属的 `hooks/discord-turn-notify.sh`
+4. 重写复制后的 `config.toml`，让 notify 命令指向当前 session 和频道
+5. 使用该目录作为 `CODEX_HOME` 启动 Codex
+
+执行 `close` 时，`orche` 会删除自动管理的临时目录。
+
+这样你可以得到：
 
 - 每个会话一个 `CODEX_HOME`
-- 每个会话一个独立的 `config.toml`
+- 每个会话一份复制后的 `config.toml`
 - 每个会话独立的 notify 配置
 - 每个会话独立的 Codex 历史记录和状态
 
-代价是：
-
-- 每个会话都需要单独的 `CODEX_HOME` 目录
-- 配置会分散到多个目录
-- 你需要自己准备该目录中的 `config.toml` 和所需的 Codex 状态
-
-`tmux-orche` 只负责在启动 Codex 前注入 `CODEX_HOME`，不会自动管理或同步这些目录的内容。
+如果你需要完全手动控制，仍然可以使用 `--codex-home` 作为高级覆盖项。
 
 ## 通知工作流
 
-`tmux-orche` 的设计目标是与现有的 Codex 原生 notify 管线配合工作。仓库中还包含一个本地 hook 变体 [`scripts/notify-discord.sh`](./scripts/notify-discord.sh)，它基于成熟的 `discord-turn-notify.sh` 设计改造而来，但不会修改 `~/.codex/hooks/` 下的原始脚本。
+`tmux-orche` 使用现有的 Codex 原生 notify 管线，但在默认工作流中，它会自动管理一份按 session 复制出来的 hook。仓库中也提供了源码版本 [`scripts/notify-discord.sh`](./scripts/notify-discord.sh)，`orche` 会将它写入每个受管 `CODEX_HOME`。
 
 ### `orche` 提供的能力
 
 - `orche session-new` 会把活动会话上下文写入 `~/.config/orche/config.json`
+- `orche session-new` 会创建每个 session 专属的临时 `CODEX_HOME`，并重写其中的 `config.toml`
 - `orche turn-summary --session <name>` 以 CLI 形式暴露当前的 turn 摘要逻辑
 - `orche _turn-summary --session <name>` 也保留为隐藏兼容别名
 - `orche config get/set/list` 为通知密钥和频道设置提供稳定接口
@@ -398,59 +392,13 @@ orche session-new \
 - hook 负责对外投递
 - `orche` 负责提供会话元数据和摘要提取能力
 
-### Codex 原生 Notify 配置
+### 自动 Notify 配置
 
-在 `~/.codex/config.toml` 中：
+默认工作流是自动的。
 
-```toml
-notify = ["/bin/bash", "/Users/dnq/.codex/hooks/discord-turn-notify.sh"]
-```
-
-这样 hook 就可以读取 `~/.config/orche/config.json`、解析 Codex payload，并向 Discord 发送消息。
-
-如果你想使用仓库内适配过的 hook，可以把 Codex 指向：
-
-```toml
-notify = ["/bin/bash", "/path/to/orche/scripts/notify-discord.sh"]
-```
-
-### Codex Notify Setup
-
-`orche` 有意不内置自动配置。
-
-原因如下：
-
-- `~/.codex/config.toml` 是用户级全局配置，而不是仓库内状态
-- 用户可能已经有自己的 `notify` 管线，不应被覆盖
-- Discord bot token 属于敏感信息，不应被静默写入脚本或配置文件
-
-推荐方式是显式手动配置。
-
-1. 确保 `~/.codex/config.toml` 已存在。
-
-2. 添加 notify hook 配置：
-
-```toml
-notify = ["/bin/bash", "/Users/dnq/.codex/hooks/discord-turn-notify.sh"]
-```
-
-3. 如果 `~/.codex/hooks/discord-turn-notify.sh` 尚不存在，则创建它。
-
-4. 在该 hook 中：
-   - 读取 `~/.config/orche/config.json`，获取 `codex_turn_complete_channel_id`、`session` 和 `cwd`
-   - 读取 Codex 传入的 JSON payload
-   - 在需要精简完成摘要时，调用 `orche turn-summary --session "$session"`
-
-5. 安全地提供密钥：
-   - 优先使用 `orche config set discord.bot-token ...` 或 `DISCORD_BOT_TOKEN`
-   - 避免在被版本控制跟踪的文件中硬编码 token
-   - 使用 `orche config set` 或 `orche session-new --discord-channel-id ...` 设置 `discord.channel-id`
-
-示例 shell 用法：
+当你执行：
 
 ```bash
-orche config set discord.bot-token "your-token"
-orche config set discord.channel-id "123456789012345678"
 orche session-new \
   --cwd /path/to/repo \
   --agent codex \
@@ -458,13 +406,36 @@ orche session-new \
   --discord-channel-id 123456789012345678
 ```
 
-然后在 hook 中：
+`orche` 会：
+
+1. 将 `~/.codex/` 复制到 `/tmp/orche-codex-repo-codex-main/`
+2. 将 `hooks/discord-turn-notify.sh` 写入这份复制后的 home
+3. 重写复制后的 `config.toml`，让 notify 命令携带当前 session 和频道
+4. 以 `CODEX_HOME=/tmp/orche-codex-repo-codex-main/` 启动 Codex
+
+这意味着全局 `~/.codex/config.toml` 只作为基础模板使用，而每个运行中的 session 都会自动得到自己隔离的 notify 配置。
+
+### 你仍然需要配置的内容
+
+你仍然需要：
+
+- 一份可复制的基础 `~/.codex/` 目录
+- 通过以下任一方式提供 Discord 凭据：
+  - `orche config set discord.bot-token ...`
+  - 或 `DISCORD_BOT_TOKEN`
+- 通过以下任一方式提供 Discord 频道 ID：
+  - `orche config set discord.channel-id ...`
+  - 或 `orche session-new --discord-channel-id ...`
+
+示例：
 
 ```bash
-session="$(jq -r '.session // ""' ~/.config/orche/config.json)"
-summary="$(orche turn-summary --session "$session" 2>/dev/null || true)"
-channel_id="$(orche config get discord.channel-id)"
-bot_token="${DISCORD_BOT_TOKEN:-$(orche config get discord.bot-token)}"
+orche config set discord.bot-token "your-token"
+orche session-new \
+  --cwd /path/to/repo \
+  --agent codex \
+  --name repo-codex-main \
+  --discord-channel-id 123456789012345678
 ```
 
 ### 使用 `orche` 配合现有 Hook
@@ -485,7 +456,7 @@ orche session-new \
 orche prompt --session repo-codex-main --prompt "review the latest changes"
 ```
 
-3. 当 Codex 发出原生 notify 事件时，hook 会从 `~/.config/orche/config.json` 读取：
+3. 当 Codex 发出原生 notify 事件时，复制出来的 session 专属 hook 会读取：
 
 - `codex_turn_complete_channel_id`
 - `session`
@@ -501,7 +472,7 @@ orche turn-summary --session repo-codex-main
 
 ### Hook 集成说明
 
-如果你当前的 hook 仍然调用旧的 `orch.py _turn-summary`，请将该调用改为：
+如果你维护的是自定义 hook，且它仍然调用旧的 `orch.py _turn-summary`，请将该调用改为：
 
 ```bash
 orche turn-summary --session "$session"

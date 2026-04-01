@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from orche.notify.config import DiscordNotifyConfig
-from orche.notify.discord import DiscordNotifier
+from orche.notify.discord import DEFAULT_USER_AGENT, DiscordNotifier
 from orche.notify.exceptions import NotifyConfigError, NotifyDeliveryError
 from orche.notify.http import HTTPResponse
 from orche.notify.models import Message
@@ -19,6 +19,7 @@ def test_discord_notifier_sends_via_bot_token(fake_http_client):
 
     assert result.ok is True
     assert fake_http_client.requests[0]["headers"]["Authorization"] == "Bot bot-token"
+    assert fake_http_client.requests[0]["headers"]["User-Agent"] == DEFAULT_USER_AGENT
     assert fake_http_client.requests[0]["json_body"]["allowed_mentions"]["users"] == ["42"]
 
 
@@ -32,6 +33,7 @@ def test_discord_notifier_sends_via_webhook(fake_http_client):
 
     assert fake_http_client.requests[0]["url"] == "https://discord.test/webhook"
     assert "Authorization" not in fake_http_client.requests[0]["headers"]
+    assert fake_http_client.requests[0]["headers"]["User-Agent"] == DEFAULT_USER_AGENT
 
 
 def test_discord_notifier_requires_token_or_webhook(fake_http_client):

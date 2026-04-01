@@ -6,6 +6,8 @@ from .exceptions import NotifyConfigError, NotifyDeliveryError
 from .http import HTTPClient, UrllibHTTPClient
 from .models import DeliveryResult, Message
 
+DEFAULT_USER_AGENT = "tmux-orche/0.1.1 (+https://github.com/parkgogogo/tmux-orche)"
+
 
 class DiscordNotifier(Notifier):
     name = "discord"
@@ -20,14 +22,15 @@ class DiscordNotifier(Notifier):
         self.http_client = http_client or UrllibHTTPClient()
 
     def send(self, message: Message) -> DeliveryResult:
-        request_body = {
-            "content": message.content,
-            "allowed_mentions": self._allowed_mentions(),
+        request_body = {"content": message.content, "allowed_mentions": self._allowed_mentions()}
+        base_headers = {
+            "Content-Type": "application/json",
+            "User-Agent": DEFAULT_USER_AGENT,
         }
         if self.config.webhook_url:
             response = self.http_client.post(
                 self.config.webhook_url,
-                headers={"Content-Type": "application/json"},
+                headers=base_headers,
                 json_body=request_body,
                 timeout=self.config.timeout_seconds,
             )
@@ -39,8 +42,8 @@ class DiscordNotifier(Notifier):
             response = self.http_client.post(
                 f"https://discord.com/api/v10/channels/{message.channel_id}/messages",
                 headers={
+                    **base_headers,
                     "Authorization": f"Bot {self.config.bot_token}",
-                    "Content-Type": "application/json",
                 },
                 json_body=request_body,
                 timeout=self.config.timeout_seconds,

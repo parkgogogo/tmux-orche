@@ -30,6 +30,7 @@ from .backend import (
     load_history_entries,
     list_config_values,
     latest_turn_summary,
+    log_event,
     log_exception,
     resolve_session_context,
     send_prompt,
@@ -290,7 +291,7 @@ def notify_discord_hidden(
         payload_text = payload
         if payload_text is None and not sys.stdin.isatty():
             payload_text = sys.stdin.read()
-        dispatch_payload(
+        results = dispatch_payload(
             payload_text or "",
             runtime_config=load_config(),
             summary_loader=latest_turn_summary,
@@ -298,6 +299,21 @@ def notify_discord_hidden(
             explicit_session=session or os.environ.get("ORCHE_SESSION", ""),
             status=status,
         )
+        if not results:
+            log_event(
+                "notify.skipped",
+                session=session or os.environ.get("ORCHE_SESSION", ""),
+                channel_id=channel_id or os.environ.get("ORCHE_DISCORD_CHANNEL_ID", ""),
+            )
+        for result in results:
+            log_event(
+                "notify.delivery",
+                provider=result.provider,
+                ok=result.ok,
+                detail=result.detail,
+                session=session or os.environ.get("ORCHE_SESSION", ""),
+                channel_id=channel_id or os.environ.get("ORCHE_DISCORD_CHANNEL_ID", ""),
+            )
     except Exception as exc:  # pragma: no cover
         log_exception("notify.error", exc)
 

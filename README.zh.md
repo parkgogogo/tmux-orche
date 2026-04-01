@@ -47,7 +47,7 @@ Codex 不支持通过 CLI 参数直接指定任意配置文件路径。
 
 1. 用户在 Discord 服务器中发送任务，并 `@OpenClaw`。
 2. OpenClaw 在主聊天频道中读取消息。
-3. OpenClaw 调用 `orche session-new` 和 `orche prompt`。
+3. OpenClaw 调用 `orche session-new` 和 `orche send`。
 4. `orche` 立即返回，OpenClaw 当前回合结束。
 5. Codex 在后台持久化 tmux 会话中继续运行。
 6. notify hook 会把完成消息发回同一个 Discord 频道。
@@ -122,7 +122,7 @@ OpenClaw Bot
     |
     +--> orche session-new
     |
-    +--> orche prompt
+    +--> orche send
     |
     v
 OpenClaw returns immediately
@@ -221,10 +221,10 @@ orche session-new \
 
 默认情况下，`orche` 会自动在 `/tmp/orche-codex-<session>/` 下创建并管理临时 `CODEX_HOME`。
 
-向已有会话发送 prompt：
+向已有会话发送消息：
 
 ```bash
-orche prompt --session repo-codex-main --prompt "analyze the test failures"
+orche send --session repo-codex-main "analyze the test failures"
 ```
 
 查看会话状态：
@@ -279,7 +279,7 @@ orche close --session repo-codex-main
 | `orche config set` | 写入支持的运行时配置值。 | `<key>`, `<value>` |
 | `orche config list` | 列出支持的运行时配置值。 | None |
 | `orche session-new` | 创建或复用一个持久化 Codex 会话。 | `--cwd`, `--agent`, `--name`, `--codex-home`, `--discord-channel-id` |
-| `orche prompt` | 向已有会话发送 fire-and-forget prompt。 | `--session`, `--prompt` |
+| `orche send` | 向已有会话发送 fire-and-forget 消息。 | `--session`, `<message>` |
 | `orche status` | 显示 pane、cwd、运行状态和会话元数据。 | `--session` |
 | `orche read` | 通过 `tmux-bridge` 读取最近的 pane 输出。 | `--session`, `--lines` |
 | `orche type` | 向会话输入文本但不提交。 | `--session`, `--text` |
@@ -293,7 +293,7 @@ orche close --session repo-codex-main
 ```bash
 orche --help
 orche session-new --help
-orche prompt --help
+orche send --help
 ```
 
 ## 配置
@@ -457,7 +457,7 @@ orche session-new \
 2. 发送任务：
 
 ```bash
-orche prompt --session repo-codex-main --prompt "review the latest changes"
+orche send --session repo-codex-main "review the latest changes"
 ```
 
 3. 当 Codex 发出原生 notify 事件时，复制出来的 session 专属 hook 会读取：

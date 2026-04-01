@@ -47,7 +47,7 @@ The intended production workflow looks like this:
 
 1. A user sends a task in a Discord server and mentions `@OpenClaw`.
 2. OpenClaw reads the message in the main chat channel.
-3. OpenClaw calls `orche session-new` and `orche prompt`.
+3. OpenClaw calls `orche session-new` and `orche send`.
 4. `orche` returns immediately, and OpenClaw ends the turn.
 5. Codex keeps running in a persistent tmux session in the background.
 6. A notify hook sends a completion message back to the same Discord channel.
@@ -122,7 +122,7 @@ OpenClaw Bot
     |
     +--> orche session-new
     |
-    +--> orche prompt
+    +--> orche send
     |
     v
 OpenClaw returns immediately
@@ -221,10 +221,10 @@ orche session-new \
 
 By default, `orche` will automatically create and manage a temporary `CODEX_HOME` under `/tmp/orche-codex-<session>/`.
 
-Send a prompt into an existing session:
+Send a message into an existing session:
 
 ```bash
-orche prompt --session repo-codex-main --prompt "analyze the test failures"
+orche send --session repo-codex-main "analyze the test failures"
 ```
 
 Check session status:
@@ -279,7 +279,7 @@ orche close --session repo-codex-main
 | `orche config set` | Write a supported runtime config value. | `<key>`, `<value>` |
 | `orche config list` | List supported runtime config values. | None |
 | `orche session-new` | Create or reuse a persistent Codex session. | `--cwd`, `--agent`, `--name`, `--codex-home`, `--discord-channel-id` |
-| `orche prompt` | Send a fire-and-forget prompt to an existing session. | `--session`, `--prompt` |
+| `orche send` | Send a fire-and-forget message to an existing session. | `--session`, `<message>` |
 | `orche status` | Show resolved pane, cwd, running state, and session metadata. | `--session` |
 | `orche read` | Read recent pane output through `tmux-bridge`. | `--session`, `--lines` |
 | `orche type` | Type text into the session without submitting it. | `--session`, `--text` |
@@ -293,7 +293,7 @@ For built-in help:
 ```bash
 orche --help
 orche session-new --help
-orche prompt --help
+orche send --help
 ```
 
 ## Configuration
@@ -457,7 +457,7 @@ orche session-new \
 2. Send work:
 
 ```bash
-orche prompt --session repo-codex-main --prompt "review the latest changes"
+orche send --session repo-codex-main "review the latest changes"
 ```
 
 3. When Codex emits a native notify event, the copied session-specific hook reads:

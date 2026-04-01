@@ -165,16 +165,16 @@ def session_new(
         _handle_error(exc)
 
 
-@app.command("prompt")
-def prompt(
+@app.command("send")
+def send(
     session: str = typer.Option(..., "--session", help="Session name."),
-    prompt: str = typer.Option(..., "--prompt", help="Prompt text to send."),
+    message: str = typer.Argument(..., help="Message text to send."),
 ) -> None:
     try:
         cwd, agent, _meta = resolve_session_context(session=session, require_cwd_agent=True)
         if cwd is None or agent is None:
             raise OrcheError(f"Session {session} is missing cwd/agent context; create it with session-new first")
-        send_prompt(session, cwd, agent, prompt)
+        send_prompt(session, cwd, agent, message)
         console.print(f"Sent. Session: {session}")
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)

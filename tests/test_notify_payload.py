@@ -10,13 +10,68 @@ def test_parse_payload_rejects_invalid_json():
     assert parse_payload('["not-a-mapping"]') is None
 
 
-def test_summarize_assistant_message_strips_formatting():
+def test_summarize_assistant_message_preserves_paragraphs_and_lists():
     summary = summarize_assistant_message(
-        "\n# Title\n**Standalone**\n- item one\n1. item two\n``\n```py\nprint('x')\n```",
+        "First paragraph line 1  \nFirst paragraph line 2\n\n## Result\n- item one\n1. item two",
         max_chars=200,
     )
 
-    assert summary == "Title item one item two"
+    assert summary == "First paragraph line 1 First paragraph line 2\n\n**Result**\n\n- item one\n1. item two"
+
+
+def test_summarize_assistant_message_preserves_code_block_preview():
+    summary = summarize_assistant_message(
+        "Here is the fix:\n\n```py\nline1\nline2\nline3\nline4\nline5\nline6\n```\n\nDone.",
+        max_chars=400,
+    )
+
+    assert summary == "Here is the fix:\n\n```py\nline1\nline2\nline3\nline4\nline5\n...\n```\n\nDone."
+
+
+def test_summarize_assistant_message_closes_unfinished_code_block_when_truncated():
+    summary = summarize_assistant_message(
+        "```py\nline1\nline2\nline3\nline4\nline5\nline6\n```",
+        max_chars=18,
+    )
+
+    assert summary.endswith("```")
+    assert "…" in summary
+
+
+def test_summarize_assistant_message_truncates_plain_text_for_discord():
+    summary = summarize_assistant_message(
+        "alpha beta gamma delta",
+        max_chars=10,
+    )
+
+    assert summary == "alpha bet…"
+
+
+def test_summarize_assistant_message_handles_tiny_discord_limit():
+    summary = summarize_assistant_message(
+        "alpha beta gamma",
+        max_chars=1,
+    )
+
+    assert summary == "…"
+
+
+def test_summarize_assistant_message_truncates_open_code_block_without_closing_when_limit_is_too_small():
+    summary = summarize_assistant_message(
+        "```py\nline1\nline2\nline3\nline4\nline5\nline6\n```",
+        max_chars=4,
+    )
+
+    assert summary == "```p"
+
+
+def test_summarize_assistant_message_truncates_open_code_block_before_first_newline():
+    summary = summarize_assistant_message(
+        "```py\nline1\nline2\nline3\nline4\nline5\nline6\n```",
+        max_chars=6,
+    )
+
+    assert summary == "`…\n```"
 
 
 def test_build_message_from_payload_prefers_explicit_values():
@@ -32,7 +87,8 @@ def test_build_message_from_payload_prefers_explicit_values():
     assert message is not None
     assert message.channel_id == "222"
     assert message.session == "explicit-session"
-    assert "Done fixed it" in message.content
+    assert "**Done**" in message.content
+    assert "- fixed it" in message.content
     assert "cwd: `/repo`" in message.content
     assert "session: `explicit-session`" in message.content
 
@@ -125,3 +181,22 @@ def test_build_message_from_payload_returns_none_for_invalid_payload_text():
         )
         is None
     )
+
+
+def test_summarize_assistant_message_skips_empty_code_block():
+    summary = summarize_assistant_message(
+        "Before\n\n```py\n```\n\nAfter",
+        max_chars=200,
+    )
+
+    assert summary == "Before\n\nAfter"
+
+
+def test_summarize_assistant_message_keeps_short_code_block_and_unclosed_fence():
+    summary = summarize_assistant_message(
+        "## Heading\n\n```py\nprint('x')",
+        max_chars=200,
+    )
+
+    assert summary == "**Heading**\n\n```py\nprint('x')\n```"
+

@@ -58,28 +58,103 @@ def _compact_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _is_list_like(line: str) -> bool:
+    return bool(re.match(r"^([-*+]\s+|\d+\.\s+|>\s+)", line))
+
+
+def _truncate_discord_text(text: str, max_chars: int) -> str:
+    value = text.strip()
+    if len(value) <= max_chars:
+        return value
+    ellipsis = "…"
+    if max_chars <= len(ellipsis):
+        return ellipsis[:max_chars]
+    truncated = value[: max_chars - len(ellipsis)].rstrip()
+    if truncated.count("```") % 2 == 1:
+        closing = "\n```"
+        if max_chars <= len(ellipsis) + len(closing):
+            return value[:max_chars].rstrip()
+        truncated = value[: max_chars - len(ellipsis) - len(closing)].rstrip()
+        if "\n" in truncated:
+            truncated = truncated.rsplit("\n", 1)[0].rstrip() or truncated
+        return f"{truncated}{ellipsis}{closing}"
+    return f"{truncated}{ellipsis}"
+
+
 def summarize_assistant_message(text: str, *, max_chars: int) -> str:
-    parts = []
+    blocks = []
+    paragraph_lines = []
+    list_lines = []
     in_code_block = False
+    code_language = ""
+    code_lines = []
+    code_truncated = False
+
+    def flush_paragraph() -> None:
+        if paragraph_lines:
+            blocks.append(" ".join(paragraph_lines).strip())
+            paragraph_lines.clear()
+
+    def flush_list() -> None:
+        if list_lines:
+            blocks.append("\n".join(list_lines).strip())
+            list_lines.clear()
+
+    def flush_code_block() -> None:
+        nonlocal code_language, code_truncated
+        if not code_lines and not code_truncated:
+            code_language = ""
+            return
+        content_lines = list(code_lines)
+        if code_truncated:
+            content_lines.append("...")
+        blocks.append(f"```{code_language}\n" + "\n".join(content_lines) + "\n```")
+        code_lines.clear()
+        code_language = ""
+        code_truncated = False
+
     for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if line.startswith("```"):
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            flush_paragraph()
+            flush_list()
+            if in_code_block:
+                flush_code_block()
+            else:
+                code_language = stripped[3:].strip()
+                code_lines.clear()
+                code_truncated = False
             in_code_block = not in_code_block
             continue
-        if in_code_block or not line:
+        if in_code_block:
+            if len(code_lines) < 5:
+                code_lines.append(line)
+            else:
+                code_truncated = True
             continue
-        if re.match(r"^#{1,6}\s+", line):
-            line = re.sub(r"^#{1,6}\s+", "", line)
-        if re.match(r"^\*\*[^*]+\*\*$", line):
+        if not stripped:
+            flush_paragraph()
+            flush_list()
             continue
-        if re.match(r"^[-*]\s+", line):
-            line = re.sub(r"^[-*]\s+", "", line)
-        if re.match(r"^\d+\.\s+", line):
-            line = re.sub(r"^\d+\.\s+", "", line)
-        line = _compact_text(line.replace("`", ""))
-        if line:
-            parts.append(line)
-    return " ".join(parts)[:max_chars]
+        if re.match(r"^#{1,6}\s+", stripped):
+            flush_paragraph()
+            flush_list()
+            title = _compact_text(re.sub(r"^#{1,6}\s+", "", stripped))
+            blocks.append(f"**{title}**")
+            continue
+        normalized = _compact_text(stripped)
+        if _is_list_like(normalized):
+            flush_paragraph()
+            list_lines.append(normalized)
+            continue
+        flush_list()
+        paragraph_lines.append(normalized)
+    if in_code_block:
+        flush_code_block()
+    flush_paragraph()
+    flush_list()
+    return _truncate_discord_text("\n\n".join(block for block in blocks if block.strip()), max_chars)
 
 
 def _event_name(payload: Mapping[str, Any]) -> str:

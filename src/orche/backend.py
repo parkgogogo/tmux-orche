@@ -34,6 +34,12 @@ READY_SURFACE_HINTS = (
     "Ctrl-C to interrupt",
 )
 TMUX_BRIDGE_FALLBACK = Path.home() / ".smux" / "bin" / "tmux-bridge"
+CONFIG_KEY_MAP = {
+    "discord.bot-token": "discord_bot_token",
+    "discord.channel-id": "discord_channel_id",
+    "discord.webhook-url": "discord_webhook_url",
+    "notify.enabled": "notify_enabled",
+}
 
 
 class OrcheError(RuntimeError):
@@ -358,6 +364,10 @@ def load_config() -> Dict[str, Any]:
     default = {
         "_comment": CONFIG_COMMENT,
         "codex_turn_complete_channel_id": "",
+        "discord_bot_token": "",
+        "discord_channel_id": "",
+        "discord_webhook_url": "",
+        "notify_enabled": True,
         "session": "",
         "discord_session": "",
     }
@@ -392,6 +402,57 @@ def derive_discord_session(channel_id: str) -> str:
     return f"agent:main:discord:channel:{channel_id}"
 
 
+def config_key_field(key: str) -> str:
+    field = CONFIG_KEY_MAP.get(key)
+    if field is None:
+        supported = ", ".join(sorted(CONFIG_KEY_MAP))
+        raise OrcheError(f"Unsupported config key: {key}. Supported keys: {supported}")
+    return field
+
+
+def get_config_value(key: str) -> str:
+    config = load_config()
+    if key == "discord.channel-id":
+        value = str(config.get("discord_channel_id") or config.get("codex_turn_complete_channel_id") or "").strip()
+        if value:
+            return validate_discord_channel_id(value)
+        return ""
+    field = config_key_field(key)
+    value = config.get(field)
+    if key == "notify.enabled":
+        return "true" if bool(value) else "false"
+    return "" if value is None else str(value)
+
+
+def set_config_value(key: str, value: str) -> Dict[str, Any]:
+    config = load_config()
+    field = config_key_field(key)
+    normalized = value
+    if key == "discord.channel-id":
+        normalized = validate_discord_channel_id(value)
+        config["codex_turn_complete_channel_id"] = normalized
+        config["discord_channel_id"] = normalized
+        if not config.get("discord_session"):
+            config["discord_session"] = derive_discord_session(normalized)
+    elif key == "notify.enabled":
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            normalized = True
+        elif lowered in {"0", "false", "no", "off"}:
+            normalized = False
+        else:
+            raise OrcheError("notify.enabled must be one of: true, false, 1, 0, yes, no, on, off")
+    else:
+        normalized = value.strip()
+    config[field] = normalized
+    save_config(config)
+    return config
+
+
+def list_config_values() -> Dict[str, str]:
+    return {key: get_config_value(key) for key in sorted(CONFIG_KEY_MAP)}
+
+
 def update_runtime_config(
     *,
     session: str,
@@ -406,7 +467,9 @@ def update_runtime_config(
     config.pop("orch_session", None)
     config.pop("parent_session_key", None)
     if discord_channel_id:
-        config["codex_turn_complete_channel_id"] = validate_discord_channel_id(discord_channel_id)
+        normalized_channel_id = validate_discord_channel_id(discord_channel_id)
+        config["codex_turn_complete_channel_id"] = normalized_channel_id
+        config["discord_channel_id"] = normalized_channel_id
     config["session"] = session
     if discord_session:
         config["discord_session"] = discord_session

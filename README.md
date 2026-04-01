@@ -134,6 +134,9 @@ orche close --session repo-codex-main
 | Command | Description | Key Options |
 | --- | --- | --- |
 | `orche backend` | Print the active backend type. | None |
+| `orche config get` | Read a supported runtime config value. | `<key>` |
+| `orche config set` | Write a supported runtime config value. | `<key>`, `<value>` |
+| `orche config list` | List supported runtime config values. | None |
 | `orche session-new` | Create or reuse a persistent Codex session. | `--cwd`, `--agent`, `--name`, `--discord-channel-id` |
 | `orche prompt` | Send a fire-and-forget prompt to an existing session. | `--session`, `--prompt` |
 | `orche status` | Show resolved pane, cwd, running state, and session metadata. | `--session` |
@@ -190,6 +193,23 @@ The runtime config stores fields such as:
 
 Whenever `orche` updates its runtime config, it mirrors the data to `~/config/orch.json` so existing Codex notify hooks can keep working.
 
+You can manage notification-related config directly from the CLI:
+
+```bash
+orche config set discord.bot-token "YOUR_DISCORD_BOT_TOKEN"
+orche config set discord.channel-id "123456789012345678"
+orche config set discord.webhook-url "https://discord.com/api/webhooks/..."
+orche config set notify.enabled true
+orche config list
+```
+
+Supported config keys:
+
+- `discord.bot-token`
+- `discord.channel-id`
+- `discord.webhook-url`
+- `notify.enabled`
+
 ## Requirements
 
 `orche` depends on these external tools being installed and available:
@@ -221,7 +241,7 @@ This keeps the orchestration stateful without forcing the CLI itself to stay att
 
 ## Notification Workflow
 
-`tmux-orche` does not implement its own Discord sender. It is designed to work with the existing Codex native notify pipeline and the mature hook script in `~/.codex/hooks/discord-turn-notify.sh`.
+`tmux-orche` is designed to work with the existing Codex native notify pipeline. This repository also includes a local hook variant at [`scripts/notify-discord.sh`](./scripts/notify-discord.sh), adapted from the mature `discord-turn-notify.sh` design without modifying the original script in `~/.codex/hooks/`.
 
 ### Architecture
 
@@ -248,6 +268,7 @@ Discord
   - `~/config/orch.json`
 - `orche turn-summary --session <name>` exposes the current turn-summary logic in a CLI-friendly way
 - `orche _turn-summary --session <name>` is also available as a hidden compatibility alias
+- `orche config get/set/list` provides a stable interface for notification secrets and channel settings
 
 This keeps the design minimal:
 
@@ -264,6 +285,12 @@ notify = ["/bin/bash", "/Users/dnq/.codex/hooks/discord-turn-notify.sh"]
 ```
 
 That hook can then read `~/config/orch.json`, inspect the Codex payload, and post to Discord.
+
+If you want to use the repo-local adapted hook instead, point Codex at:
+
+```toml
+notify = ["/bin/bash", "/path/to/orche/scripts/notify-discord.sh"]
+```
 
 ### Codex Notify Setup
 
@@ -293,14 +320,15 @@ notify = ["/bin/bash", "/Users/dnq/.codex/hooks/discord-turn-notify.sh"]
    - call `orche turn-summary --session "$session"` when you need a concise completion summary
 
 5. Provide secrets safely:
-   - prefer environment variables such as `DISCORD_BOT_TOKEN`
+   - prefer `orche config set discord.bot-token ...` or `DISCORD_BOT_TOKEN`
    - avoid hardcoding tokens into tracked files
-   - keep `CHANNEL_ID` in `orche session-new --discord-channel-id ...` so it is written to `~/config/orch.json`
+   - set `discord.channel-id` with `orche config set` or via `orche session-new --discord-channel-id ...`
 
 Example shell pattern:
 
 ```bash
-export DISCORD_BOT_TOKEN="your-token"
+orche config set discord.bot-token "your-token"
+orche config set discord.channel-id "123456789012345678"
 orche session-new \
   --cwd /path/to/repo \
   --agent codex \
@@ -313,8 +341,8 @@ Then inside the hook:
 ```bash
 session="$(jq -r '.session // ""' ~/config/orch.json)"
 summary="$(orche turn-summary --session "$session" 2>/dev/null || true)"
-channel_id="$(jq -r '.codex_turn_complete_channel_id // ""' ~/config/orch.json)"
-bot_token="${DISCORD_BOT_TOKEN:-}"
+channel_id="$(orche config get discord.channel-id)"
+bot_token="${DISCORD_BOT_TOKEN:-$(orche config get discord.bot-token)}"
 ```
 
 This keeps the responsibility split cleanly:

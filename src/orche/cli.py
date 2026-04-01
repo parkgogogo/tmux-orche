@@ -7,6 +7,7 @@ from typing import List, Optional
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 from . import __version__
@@ -22,11 +23,14 @@ from .backend import (
     close_session,
     default_session_name,
     ensure_session,
+    get_config_value,
     load_history_entries,
+    list_config_values,
     latest_turn_summary,
     log_exception,
     resolve_session_context,
     send_prompt,
+    set_config_value,
 )
 from .paths import ensure_directories
 
@@ -37,6 +41,8 @@ app = typer.Typer(
     help="Modern CLI for tmux-backed Codex orchestration with tmux-bridge.",
     add_completion=False,
 )
+config_app = typer.Typer(help="Manage orche runtime configuration.")
+app.add_typer(config_app, name="config")
 console = Console()
 stderr = Console(stderr=True)
 
@@ -88,6 +94,41 @@ def main_callback(
 @app.command("backend")
 def backend() -> None:
     console.print(BACKEND)
+
+
+@config_app.command("get")
+def config_get(
+    key: str = typer.Argument(..., help="Config key to read."),
+) -> None:
+    try:
+        console.print(get_config_value(key))
+    except (OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
+
+
+@config_app.command("set")
+def config_set(
+    key: str = typer.Argument(..., help="Config key to update."),
+    value: str = typer.Argument(..., help="Value to write."),
+) -> None:
+    try:
+        set_config_value(key, value)
+        console.print(get_config_value(key))
+    except (OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
+
+
+@config_app.command("list")
+def config_list() -> None:
+    try:
+        table = Table(title="orche config")
+        table.add_column("Key", style="cyan")
+        table.add_column("Value", style="white")
+        for key, value in list_config_values().items():
+            table.add_row(key, value)
+        console.print(table)
+    except (OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
 
 
 @app.command("session-new")

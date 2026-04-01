@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -24,6 +26,7 @@ from .backend import (
     default_session_name,
     ensure_session,
     get_config_value,
+    load_config,
     load_history_entries,
     list_config_values,
     latest_turn_summary,
@@ -32,6 +35,7 @@ from .backend import (
     send_prompt,
     set_config_value,
 )
+from .notify import dispatch_payload
 from .paths import ensure_directories
 
 app = typer.Typer(
@@ -273,6 +277,29 @@ def turn_summary_hidden(
     session: str = typer.Option(..., "--session", help="Session name."),
 ) -> None:
     turn_summary(session=session)
+
+
+@app.command("_notify-discord", hidden=True)
+def notify_discord_hidden(
+    payload: Optional[str] = typer.Argument(None, help="Optional JSON payload. If omitted, stdin is used."),
+    session: Optional[str] = typer.Option(None, "--session", help="Explicit session override."),
+    channel_id: Optional[str] = typer.Option(None, "--channel-id", help="Explicit Discord channel override."),
+    status: str = typer.Option("success", "--status", help="Delivery status label."),
+) -> None:
+    try:
+        payload_text = payload
+        if payload_text is None and not sys.stdin.isatty():
+            payload_text = sys.stdin.read()
+        dispatch_payload(
+            payload_text or "",
+            runtime_config=load_config(),
+            summary_loader=latest_turn_summary,
+            explicit_channel_id=channel_id or os.environ.get("ORCHE_DISCORD_CHANNEL_ID", ""),
+            explicit_session=session or os.environ.get("ORCHE_SESSION", ""),
+            status=status,
+        )
+    except Exception as exc:  # pragma: no cover
+        log_exception("notify.error", exc)
 
 
 @app.command("history", hidden=True)

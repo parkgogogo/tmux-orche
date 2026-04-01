@@ -13,8 +13,28 @@ dependencies = [
   "typer>=0.16.0",
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+]
+
 [project.scripts]
 orche = "orche.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/orche"]
+
+[tool.pytest.ini_options]
+addopts = "-q --cov=orche.notify --cov-branch --cov-report=term-missing"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["orche.notify"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = false

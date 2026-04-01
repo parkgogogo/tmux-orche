@@ -378,6 +378,8 @@ If you need full manual control, `--codex-home` is still available as an advance
 
 `tmux-orche` uses the existing Codex native notify pipeline, but in the default workflow it manages a per-session copied hook automatically. This repository also includes the source hook variant at [`scripts/notify-discord.sh`](./scripts/notify-discord.sh), which `orche` writes into each managed `CODEX_HOME`.
 
+The shell hook is intentionally thin. It just forwards Codex notify events into the Python notify pipeline (`orche _notify-discord`), where payload parsing, message construction, registry lookup, and provider delivery are all testable in isolation.
+
 ### What `orche` Provides
 
 - `orche session-new` writes the active session context to `~/.config/orche/config.json`
@@ -487,6 +489,26 @@ orche _turn-summary --session "$session"
 ```
 
 The rest of the notification design can stay exactly as it is.
+
+## Testing
+
+The notify stack is split into small layers so it can be tested without sending real Discord messages:
+
+- payload parsing and message shaping live in `orche.notify.payload`
+- provider delivery lives in `orche.notify.discord`
+- registry and fan-out live in `orche.notify.registry` and `orche.notify.service`
+- the shell hook is only a launcher for `orche _notify-discord`
+
+All automated tests mock HTTP delivery. No test sends a real Discord message.
+
+Run the test suite locally:
+
+```bash
+python -m pip install -e .[test]
+pytest
+```
+
+Coverage is enforced at 100% for the `orche.notify` package in CI.
 
 ## License
 

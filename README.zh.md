@@ -378,6 +378,8 @@ orche config list
 
 `tmux-orche` 使用现有的 Codex 原生 notify 管线，但在默认工作流中，它会自动管理一份按 session 复制出来的 hook。仓库中也提供了源码版本 [`scripts/notify-discord.sh`](./scripts/notify-discord.sh)，`orche` 会将它写入每个受管 `CODEX_HOME`。
 
+这个 shell hook 被刻意做得很薄。它只负责把 Codex 的 notify 事件转发给 Python 通知管线 `orche _notify-discord`，因此 payload 解析、消息组装、registry 路由和 provider 投递都可以独立测试。
+
 ### `orche` 提供的能力
 
 - `orche session-new` 会把活动会话上下文写入 `~/.config/orche/config.json`
@@ -485,6 +487,26 @@ orche _turn-summary --session "$session"
 ```
 
 通知链路的其余设计可以保持不变。
+
+## 测试
+
+notify 栈被拆成了几个可独立测试的小层：
+
+- payload 解析与消息构造位于 `orche.notify.payload`
+- provider 投递位于 `orche.notify.discord`
+- registry 与多通知器 fan-out 位于 `orche.notify.registry` 和 `orche.notify.service`
+- shell hook 只负责启动 `orche _notify-discord`
+
+所有自动化测试都会 mock HTTP 投递，不会真的向 Discord 发送消息。
+
+本地运行测试：
+
+```bash
+python -m pip install -e .[test]
+pytest
+```
+
+CI 中会对 `orche.notify` 包强制要求 100% 覆盖率。
 
 ## License
 

@@ -116,6 +116,23 @@ orche config set notify.enabled true
 ~/.local/share/orche/
 ```
 
+## Troubleshooting
+
+### Cancel a stuck turn
+
+如果 Codex 卡住、任务方向错误，或者需要在不丢失 session 的前提下停止当前执行：
+
+```bash
+orche cancel --session repo-codex-main
+```
+
+这个命令会中断当前 Codex 回合，但保留 session，因此你仍然可以继续读取输出并发送修正后的任务。
+
+与 close 的区别：
+
+- `cancel`：中断当前回合，保留 session（适合卡住或仍在运行的任务）
+- `close`：结束整个 session（适合任务已完成或已放弃）
+
 ## 前置条件
 
 - `tmux`

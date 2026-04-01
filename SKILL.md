@@ -58,3 +58,20 @@ Config path:
 ```text
 ~/.config/orche/config.json
 ```
+
+## Troubleshooting
+
+### Cancel a stuck turn
+
+If Codex is stuck, running in the wrong direction, or needs to be stopped without losing the session:
+
+```bash
+orche cancel --session repo-codex-main
+```
+
+This interrupts the current Codex turn but keeps the session alive, allowing you to read output and send a corrected task.
+
+Compare with close:
+
+- `cancel`: Interrupt current turn, keep session (for stuck or still-running tasks)
+- `close`: End entire session (for completed or abandoned tasks)

@@ -302,7 +302,7 @@ def notify_discord_hidden(
         log_exception("notify.error", exc)
 
 
-@app.command("history", hidden=True)
+@app.command("history")
 def history(
     session: str = typer.Option(..., "--session", help="Session name."),
     limit: int = typer.Option(20, "--limit", min=1, help="Number of history entries to show."),
@@ -312,14 +312,17 @@ def history(
         console.print("No history yet")
         return
     for entry in entries:
-        console.print(f"{entry.get('timestamp', '-')}\t{entry.get('action', '-')}\t{entry.get('session', '-')}")
+        details = ""
         if entry.get("prompt"):
-            console.print(f"prompt: {entry['prompt']}")
-        if entry.get("keys"):
-            console.print(f"keys: {' '.join(entry['keys'])}")
-        if entry.get("text"):
-            console.print(f"text: {entry['text']}")
-        console.print()
+            details = f'prompt: "{entry["prompt"]}"'
+        elif entry.get("text"):
+            details = f'text: "{entry["text"]}"'
+        elif entry.get("keys"):
+            details = f'keys: {" ".join(entry["keys"])}'
+        line = f"{entry.get('timestamp', '-')}\t{entry.get('action', '-')}\t{entry.get('session', '-')}"
+        if details:
+            line += f"\t{details}"
+        console.print(line)
 
 
 def main() -> int:

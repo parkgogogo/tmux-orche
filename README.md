@@ -239,6 +239,12 @@ Read the latest terminal output:
 orche read --session repo-codex-main --lines 80
 ```
 
+Show recent local action history:
+
+```bash
+orche history --session repo-codex-main --limit 20
+```
+
 Type text without pressing Enter:
 
 ```bash
@@ -282,6 +288,7 @@ orche close --session repo-codex-main
 | `orche send` | Send a fire-and-forget message to an existing session. | `--session`, `<message>` |
 | `orche status` | Show resolved pane, cwd, running state, and session metadata. | `--session` |
 | `orche read` | Read recent pane output through `tmux-bridge`. | `--session`, `--lines` |
+| `orche history` | Show recent local action history for a session. | `--session`, `--limit` |
 | `orche type` | Type text into the session without submitting it. | `--session`, `--text` |
 | `orche keys` | Send one or more key presses to the session. | `--session`, `--key` |
 | `orche cancel` | Send `Ctrl-C` to the active session. | `--session` |
@@ -335,6 +342,7 @@ You can manage notification-related config directly from the CLI:
 ```bash
 orche config set discord.bot-token "YOUR_DISCORD_BOT_TOKEN"
 orche config set discord.channel-id "123456789012345678"
+orche config set discord.mention-user-id "123456789012345678"
 orche config set discord.webhook-url "https://discord.com/api/webhooks/..."
 orche config set notify.enabled true
 orche config list
@@ -344,6 +352,7 @@ Supported config keys:
 
 - `discord.bot-token`
 - `discord.channel-id`
+- `discord.mention-user-id`
 - `discord.webhook-url`
 - `notify.enabled`
 

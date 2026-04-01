@@ -239,6 +239,12 @@ orche status --session repo-codex-main
 orche read --session repo-codex-main --lines 80
 ```
 
+查看最近的本地 action history：
+
+```bash
+orche history --session repo-codex-main --limit 20
+```
+
 输入文本但不按 Enter 提交：
 
 ```bash
@@ -282,6 +288,7 @@ orche close --session repo-codex-main
 | `orche send` | 向已有会话发送 fire-and-forget 消息。 | `--session`, `<message>` |
 | `orche status` | 显示 pane、cwd、运行状态和会话元数据。 | `--session` |
 | `orche read` | 通过 `tmux-bridge` 读取最近的 pane 输出。 | `--session`, `--lines` |
+| `orche history` | 显示某个会话最近的本地 action history。 | `--session`, `--limit` |
 | `orche type` | 向会话输入文本但不提交。 | `--session`, `--text` |
 | `orche keys` | 向会话发送一个或多个按键。 | `--session`, `--key` |
 | `orche cancel` | 向当前会话发送 `Ctrl-C`。 | `--session` |
@@ -335,6 +342,7 @@ orche send --help
 ```bash
 orche config set discord.bot-token "YOUR_DISCORD_BOT_TOKEN"
 orche config set discord.channel-id "123456789012345678"
+orche config set discord.mention-user-id "123456789012345678"
 orche config set discord.webhook-url "https://discord.com/api/webhooks/..."
 orche config set notify.enabled true
 orche config list
@@ -344,6 +352,7 @@ orche config list
 
 - `discord.bot-token`
 - `discord.channel-id`
+- `discord.mention-user-id`
 - `discord.webhook-url`
 - `notify.enabled`
 

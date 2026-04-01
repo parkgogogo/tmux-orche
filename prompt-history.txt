@@ -1,0 +1,33 @@
+评估：是否需要添加 `orche history` 命令？
+
+当前 orch.py 的 history 命令功能：
+- 显示本地 session 历史记录
+- 包括 timestamp, action, session, prompt, keys, text 等
+- 默认显示最近 20 条，支持 --limit 参数
+
+问题：
+1. tmux-orche 是否已经有替代方案？
+   - config list 可以查看配置
+   - status 可以查看 session 状态
+   - 是否有其他方式查看历史？
+
+2. 实际使用场景：
+   - 用户什么情况下需要查看历史？
+   - 是为了审计、调试、还是恢复上下文？
+   - 当前 notify 机制是否已经满足需求？
+
+3. 实现成本：
+   - orche 已经有 action history 记录（从 backend.py 可以看到 append_action_history）
+   - 添加 history 命令的工作量
+   - 维护成本
+
+4. 与现有功能的重叠：
+   - 和 turn-summary 的区别？
+   - 和 notify 推送的消息的区别？
+
+评估结论：
+- 必要：实现 history 命令
+- 不必要：已有足够替代方案，保持简洁
+- 可选：实现简化版（只显示最近 N 条 action）
+
+给出你的评估和建议，如果建议实现，给出实现方案。

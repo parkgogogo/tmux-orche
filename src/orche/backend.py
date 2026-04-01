@@ -41,6 +41,7 @@ DEFAULT_CODEX_SOURCE_HOME = Path.home() / ".codex"
 CONFIG_KEY_MAP = {
     "discord.bot-token": "discord_bot_token",
     "discord.channel-id": "discord_channel_id",
+    "discord.mention-user-id": "notify_mention_user_id",
     "discord.webhook-url": "discord_webhook_url",
     "notify.enabled": "notify_enabled",
 }

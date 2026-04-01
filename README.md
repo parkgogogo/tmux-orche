@@ -1,5 +1,7 @@
 # tmux-orche
 
+[中文](README.zh.md)
+
 Modern tmux-backed Codex orchestration for persistent CLI sessions.
 
 `tmux-orche` turns a one-off `orch.py` script into an installable Python CLI with a clean command surface, XDG-based configuration, and a reusable tmux + `tmux-bridge` backend for long-lived Codex orchestration sessions.

@@ -94,3 +94,42 @@ def test_notify_hidden_command_failure_prints_error_and_returns_nonzero(xdg_runt
 
     assert result.exit_code == 1
     assert "notify failed: provider=discord detail=discord delivery failed with status=403" in result.output
+
+
+def test_notify_hidden_command_prefers_session_meta_channel_over_global_config(xdg_runtime, monkeypatch):
+    fake_client = FakeHTTPClient()
+    monkeypatch.setattr("notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
+    write_runtime_config(
+        xdg_runtime["config_path"],
+        {
+            "notify_enabled": True,
+            "discord_bot_token": "bot-token",
+            "discord_channel_id": "2222222222",
+            "discord_session": "agent:main:discord:channel:2222222222",
+            "session": "other-session",
+            "cwd": "/tmp/other",
+        },
+    )
+
+    from backend import save_meta
+
+    save_meta(
+        "repo-codex-main",
+        {
+            "session": "repo-codex-main",
+            "cwd": "/tmp/repo",
+            "agent": "codex",
+            "pane_id": "%1",
+            "discord_channel_id": "1111111111",
+            "discord_session": "agent:main:discord:channel:1111111111",
+        },
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["_notify-discord", "--session", "repo-codex-main"],
+        input='{"event":"turn-complete","summary":"Done"}',
+    )
+
+    assert result.exit_code == 0
+    assert fake_client.requests[0]["url"].endswith("/channels/1111111111/messages")

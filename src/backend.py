@@ -673,7 +673,7 @@ def load_config() -> Dict[str, Any]:
 def save_config(config: Dict[str, Any]) -> None:
     ensure_directories()
     payload = json.dumps(config, indent=2, ensure_ascii=False) + "\n"
-    config_path().write_text(payload, encoding="utf-8")
+    write_text_atomically(config_path(), payload)
 
 
 def validate_discord_channel_id(value: str) -> str:
@@ -717,8 +717,7 @@ def set_config_value(key: str, value: str) -> Dict[str, Any]:
         normalized = validate_discord_channel_id(value)
         config["codex_turn_complete_channel_id"] = normalized
         config["discord_channel_id"] = normalized
-        if not config.get("discord_session"):
-            config["discord_session"] = derive_discord_session(normalized)
+        config["discord_session"] = derive_discord_session(normalized)
     elif key == "notify.enabled":
         lowered = value.strip().lower()
         if lowered in {"1", "true", "yes", "on"}:
@@ -1221,6 +1220,10 @@ def build_status(session: str) -> Dict[str, Any]:
     info = get_pane_info(pane_id) if pane_id else None
     cwd = str(meta.get("cwd") or (info or {}).get("pane_current_path") or "-")
     agent = str(meta.get("agent") or "codex")
+    discord_session = str(meta.get("discord_session") or "")
+    discord_channel_id = str(meta.get("discord_channel_id") or "").strip()
+    if not discord_session and discord_channel_id.isdigit():
+        discord_session = derive_discord_session(discord_channel_id)
     return {
         "backend": BACKEND,
         "session": session,
@@ -1232,7 +1235,7 @@ def build_status(session: str) -> Dict[str, Any]:
         "window_name": (info or {}).get("window_name", meta.get("window_name", "-")),
         "codex_running": bool(pane_id and is_codex_running(pane_id)),
         "pane_exists": bool(pane_id and pane_exists(pane_id)),
-        "discord_session": str(meta.get("discord_session") or load_config().get("discord_session") or ""),
+        "discord_session": discord_session,
     }
 
 

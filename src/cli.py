@@ -115,6 +115,31 @@ def _print_notify_verbose(
     console.print(message.content)
 
 
+def _notify_runtime_config(runtime_config: dict, session: str) -> dict:
+    merged = dict(runtime_config)
+    if not session:
+        return merged
+    _cwd, _agent, meta = resolve_session_context(session=session)
+    if not meta:
+        return merged
+    for key in (
+        "session",
+        "cwd",
+        "agent",
+        "pane_id",
+        "codex_home",
+        "codex_home_managed",
+        "discord_channel_id",
+        "discord_session",
+    ):
+        value = meta.get(key)
+        if value not in (None, ""):
+            merged[key] = value
+    if merged.get("discord_channel_id") and not merged.get("codex_turn_complete_channel_id"):
+        merged["codex_turn_complete_channel_id"] = merged["discord_channel_id"]
+    return merged
+
+
 def _session_name(name: Optional[str], cwd: Path, agent: str) -> str:
     return name or default_session_name(cwd.resolve(), agent, "main")
 
@@ -408,6 +433,7 @@ def notify_discord_hidden(
         runtime_config = load_config()
         resolved_channel_id = channel_id or os.environ.get("ORCHE_DISCORD_CHANNEL_ID", "")
         resolved_session = session or os.environ.get("ORCHE_SESSION", "")
+        runtime_config = _notify_runtime_config(runtime_config, resolved_session)
         notify_config = load_notify_config(runtime_config)
         message = build_message_from_payload(
             payload_text or "",

@@ -128,6 +128,31 @@ def test_config_supports_discord_mention_user_id(xdg_runtime):
     assert "123456" in list_result.stdout
 
 
+def test_build_status_uses_session_metadata_discord_session(xdg_runtime):
+    backend.save_meta(
+        "demo-session",
+        {
+            "session": "demo-session",
+            "cwd": "/repo/demo",
+            "agent": "codex",
+            "pane_id": "%1",
+            "discord_channel_id": "1111111111",
+            "discord_session": "agent:main:discord:channel:1111111111",
+        },
+    )
+    backend.save_config(
+        {
+            "_comment": "runtime",
+            "discord_channel_id": "2222222222",
+            "discord_session": "agent:main:discord:channel:2222222222",
+        }
+    )
+
+    status = backend.build_status("demo-session")
+
+    assert status["discord_session"] == "agent:main:discord:channel:1111111111"
+
+
 def test_version_works_without_subcommand(xdg_runtime):
     result = CliRunner().invoke(app, ["--version"])
 

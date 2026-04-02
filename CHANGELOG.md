@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.3 - 2026-04-03
+
+- Fix Discord notify routing so session-scoped deliveries prefer the session metadata `discord_channel_id` instead of whichever channel was most recently written into global runtime config.
+- Prevent `status` from showing a different session's `discord_session` through global-config fallback.
+- Add regression coverage for cross-session notify channel mix-ups.
+
 ## v0.4.2 - 2026-04-02
 
 - Sync project `trust_level = "trusted"` into the source Codex `config.toml` before cloning managed homes, with atomic writes and a backup file to avoid trust prompt regressions.

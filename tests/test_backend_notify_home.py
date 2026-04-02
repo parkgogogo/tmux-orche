@@ -25,6 +25,58 @@ def test_ensure_managed_codex_home_rewrites_notify_config(tmp_path, monkeypatch)
     assert '--channel-id", "1234567890"' in config_toml
 
 
+def test_ensure_managed_codex_home_inserts_notify_before_tui_section(tmp_path, monkeypatch):
+    source_home = tmp_path / "source-codex"
+    source_home.mkdir()
+    (source_home / "hooks").mkdir()
+    (source_home / "config.toml").write_text(
+        'model = "gpt-5"\n\n[tui]\nnotifications = ["agent-turn-complete"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
+
+    target = backend.ensure_managed_codex_home("repo-codex-main", discord_channel_id="1234567890")
+
+    config_lines = (Path(target) / "config.toml").read_text(encoding="utf-8").splitlines()
+    notify_index = next(index for index, line in enumerate(config_lines) if line.startswith("notify = "))
+    tui_index = next(index for index, line in enumerate(config_lines) if line == "[tui]")
+
+    assert notify_index < tui_index
+    assert config_lines[tui_index + 1] == 'notifications = ["agent-turn-complete"]'
+
+
+def test_ensure_managed_codex_home_prunes_runtime_artifacts(tmp_path, monkeypatch):
+    source_home = tmp_path / "source-codex"
+    source_home.mkdir()
+    (source_home / "hooks").mkdir()
+    (source_home / "log").mkdir()
+    (source_home / "shell_snapshots").mkdir()
+    (source_home / ".tmp").mkdir()
+    (source_home / "tmp").mkdir()
+    (source_home / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+    (source_home / "history.jsonl").write_text("history\n", encoding="utf-8")
+    (source_home / "logs_1.sqlite").write_text("sqlite\n", encoding="utf-8")
+    (source_home / "logs_1.sqlite-wal").write_text("wal\n", encoding="utf-8")
+    (source_home / "state_5.sqlite").write_text("state\n", encoding="utf-8")
+    (source_home / "state_5.sqlite-wal").write_text("state-wal\n", encoding="utf-8")
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
+
+    target = Path(backend.ensure_managed_codex_home("repo-codex-main", discord_channel_id="1234567890"))
+
+    assert not (target / "log").exists()
+    assert not (target / "shell_snapshots").exists()
+    assert not (target / ".tmp").exists()
+    assert not (target / "tmp").exists()
+    assert not (target / "history.jsonl").exists()
+    assert not (target / "logs_1.sqlite").exists()
+    assert not (target / "logs_1.sqlite-wal").exists()
+    assert not (target / "state_5.sqlite").exists()
+    assert not (target / "state_5.sqlite-wal").exists()
+    assert (target / "hooks" / "discord-turn-notify.sh").exists()
+
+
 def test_ensure_session_reuses_managed_codex_home_with_normalized_path(xdg_runtime, tmp_path, monkeypatch):
     source_home = tmp_path / "source-codex"
     source_home.mkdir()
@@ -108,3 +160,26 @@ def test_ensure_session_rejects_rebinding_session_to_different_cwd(xdg_runtime, 
         assert "already bound to cwd=" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected OrcheError for cwd mismatch")
+
+
+def test_close_session_removes_managed_codex_home(xdg_runtime, tmp_path, monkeypatch):
+    codex_home = tmp_path / "orche-codex-close-test"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+    backend.save_meta(
+        "close-test",
+        {
+            "session": "close-test",
+            "cwd": str(tmp_path),
+            "agent": "codex",
+            "pane_id": "",
+            "codex_home": str(codex_home),
+            "codex_home_managed": True,
+        },
+    )
+    monkeypatch.setattr(backend, "bridge_resolve", lambda session: "")
+
+    backend.close_session("close-test")
+
+    assert not codex_home.exists()
+    assert backend.load_meta("close-test") == {}

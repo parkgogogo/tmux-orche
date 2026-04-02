@@ -38,6 +38,10 @@ READY_SURFACE_HINTS = (
 TMUX_BRIDGE_FALLBACK = Path.home() / ".smux" / "bin" / "tmux-bridge"
 DEFAULT_CODEX_HOME_ROOT = Path(tempfile.gettempdir())
 DEFAULT_CODEX_SOURCE_HOME = Path.home() / ".codex"
+MANAGED_CODEX_RUNTIME_DIRS = {".tmp", "log", "shell_snapshots", "tmp"}
+MANAGED_CODEX_RUNTIME_FILE_GLOBS = ("history.jsonl", "logs_*.sqlite*", "state_*.sqlite*")
+TOML_TABLE_HEADER_RE = re.compile(r"^\s*\[\[?.*\]\]?\s*$")
+TOML_NOTIFY_KEY_RE = re.compile(r"^\s*notify\s*=")
 CONFIG_KEY_MAP = {
     "discord.bot-token": "discord_bot_token",
     "discord.channel-id": "discord_channel_id",
@@ -199,6 +203,72 @@ def write_notify_hook(hook_path: Path) -> None:
     hook_path.chmod(0o755)
 
 
+def strip_notify_assignments(lines: List[str]) -> List[str]:
+    cleaned: List[str] = []
+    skipping = False
+    bracket_depth = 0
+    for line in lines:
+        if not skipping and TOML_NOTIFY_KEY_RE.match(line):
+            skipping = True
+            bracket_depth = line.count("[") - line.count("]")
+            if bracket_depth <= 0:
+                skipping = False
+            continue
+        if skipping:
+            bracket_depth += line.count("[") - line.count("]")
+            if bracket_depth <= 0:
+                skipping = False
+            continue
+        cleaned.append(line)
+    return cleaned
+
+
+def upsert_top_level_notify(content: str, notify_line: str) -> str:
+    lines = strip_notify_assignments(content.splitlines(keepends=True))
+    first_table_index = next((index for index, line in enumerate(lines) if TOML_TABLE_HEADER_RE.match(line)), len(lines))
+    prefix = lines[:first_table_index]
+    suffix = lines[first_table_index:]
+    while prefix and not prefix[-1].strip():
+        prefix.pop()
+    while suffix and not suffix[0].strip():
+        suffix.pop(0)
+    updated: List[str] = list(prefix)
+    if updated and not updated[-1].endswith("\n"):
+        updated[-1] += "\n"
+    if updated:
+        updated.append("\n")
+    updated.append(notify_line + "\n")
+    if suffix:
+        updated.append("\n")
+        updated.extend(suffix)
+    return "".join(updated)
+
+
+def prune_managed_codex_home(codex_home: Path) -> None:
+    for name in MANAGED_CODEX_RUNTIME_DIRS:
+        shutil.rmtree(codex_home / name, ignore_errors=True)
+    for pattern in MANAGED_CODEX_RUNTIME_FILE_GLOBS:
+        for path in codex_home.glob(pattern):
+            with contextlib.suppress(OSError):
+                path.unlink()
+
+
+def remove_managed_codex_home(codex_home: str) -> None:
+    normalized = Path(normalize_codex_home(codex_home))
+    candidates: List[Path] = []
+    for candidate in (normalized, normalized.resolve()):
+        if candidate not in candidates:
+            candidates.append(candidate)
+    for candidate in candidates:
+        for _ in range(3):
+            if not candidate.exists():
+                break
+            shutil.rmtree(candidate, ignore_errors=True)
+            if not candidate.exists():
+                break
+            time.sleep(0.1)
+
+
 def rewrite_codex_config(codex_home: Path, *, session: str, discord_channel_id: Optional[str]) -> None:
     config_toml_path = codex_home / "config.toml"
     notify_line = render_notify_command(
@@ -210,13 +280,7 @@ def rewrite_codex_config(codex_home: Path, *, session: str, discord_channel_id: 
         content = config_toml_path.read_text(encoding="utf-8")
     else:
         content = ""
-    if re.search(r"(?m)^notify\s*=.*$", content):
-        updated = re.sub(r"(?m)^notify\s*=.*$", notify_line, content, count=1)
-    else:
-        updated = content.rstrip()
-        if updated:
-            updated += "\n\n"
-        updated += notify_line + "\n"
+    updated = upsert_top_level_notify(content, notify_line)
     config_toml_path.write_text(updated, encoding="utf-8")
 
 
@@ -227,6 +291,7 @@ def ensure_managed_codex_home(session: str, *, discord_channel_id: Optional[str]
             shutil.copytree(DEFAULT_CODEX_SOURCE_HOME, target)
         else:
             target.mkdir(parents=True, exist_ok=True)
+    prune_managed_codex_home(target)
     write_notify_hook(default_notify_hook_path(target))
     rewrite_codex_config(target, session=session, discord_channel_id=discord_channel_id)
     return target.resolve()
@@ -1037,7 +1102,7 @@ def close_session(session: str) -> str:
     if bool(meta.get("codex_home_managed")):
         codex_home = normalize_codex_home(str(meta.get("codex_home") or ""))
         if codex_home:
-            shutil.rmtree(codex_home, ignore_errors=True)
+            remove_managed_codex_home(codex_home)
     config = load_config()
     if str(config.get("session") or "") == session:
         config["session"] = ""

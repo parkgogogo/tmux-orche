@@ -43,6 +43,8 @@ def xdg_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
     monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("ORCHE_SESSION", raising=False)
+    monkeypatch.delenv("ORCHE_DISCORD_CHANNEL_ID", raising=False)
     return {
         "config_home": config_home,
         "data_home": data_home,

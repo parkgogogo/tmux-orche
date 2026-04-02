@@ -84,12 +84,46 @@ pip install .
   Check whether the session and Codex process are still running.
 - `orche read --session repo-codex-main --lines 80`
   Read recent terminal output from the live session.
+- `orche type --session repo-codex-main --text "yes"`
+  Type text into the live Codex session without pressing Enter.
+- `orche keys --session repo-codex-main --key Enter`
+  Send one or more key presses to the live Codex session.
 - `orche history --session repo-codex-main --limit 20`
   Show recent local control actions for that session.
 - `orche close --session repo-codex-main`
   Close the session when the work is finished.
 - `orche config list`
   Show current runtime configuration.
+
+## Interactive Input
+
+Use `type` and `keys` when Codex is waiting on an interactive prompt inside the tmux session.
+
+Read the latest output first:
+
+```bash
+orche read --session repo-codex-main --lines 40
+```
+
+Type text without submitting it:
+
+```bash
+orche type --session repo-codex-main --text "yes"
+```
+
+Then send Enter:
+
+```bash
+orche keys --session repo-codex-main --key Enter
+```
+
+This is useful for prompts such as trust confirmations, shell confirmations, or any other step where Codex is paused waiting for input.
+
+You can also send multiple keys in one command:
+
+```bash
+orche keys --session repo-codex-main --key Down --key Down --key Enter
+```
 
 ## Config
 

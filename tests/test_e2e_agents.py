@@ -491,7 +491,7 @@ def test_claude_e2e_cancel_recovers_from_blocking_prompt_and_keeps_session(xdg_r
     assert "Completed: summarize current status" in final_read.stdout
 
 
-def test_session_watch_status_reports_pending_turn_state(xdg_runtime, tmp_path, monkeypatch):
+def test_status_reports_pending_turn_watchdog_state(xdg_runtime, tmp_path, monkeypatch):
     runtime = make_runtime(monkeypatch, tmp_path)
     runner = CliRunner()
     session = "repo-codex-main"
@@ -514,13 +514,12 @@ def test_session_watch_status_reports_pending_turn_state(xdg_runtime, tmp_path, 
     ).exit_code == 0
 
     send_result = runner.invoke(app, ["send", "--session", session, "analyze the repo"])
-    watch_result = runner.invoke(app, ["session-watch", "status", "--session", session])
+    status_result = runner.invoke(app, ["status", "--session", session])
 
     assert send_result.exit_code == 0
-    assert watch_result.exit_code == 0
-    assert "orche watchdog" in watch_result.stdout
-    assert "Active:" in watch_result.stdout
-    assert "yes" in watch_result.stdout
+    assert status_result.exit_code == 0
+    assert "Pending turn:" in status_result.stdout
+    assert "Watchdog:" in status_result.stdout
 
 
 def test_claude_e2e_startup_times_out_if_permission_bypass_is_removed(xdg_runtime, tmp_path, monkeypatch):

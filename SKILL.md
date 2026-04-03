@@ -103,7 +103,6 @@ orche session-id
 
 - `session-new`: create or reuse a persistent managed tmux session with orche metadata, optional managed runtime home, and a required single notify binding
 - `send`: send a task into an existing managed session and return immediately
-- `session-watch status|start|stop`: inspect or manually control the per-session watchdog
 - `status`: show whether the session and agent process are still running
 - `read`: inspect recent terminal output from the live session
 - `history`: inspect recent local control actions for that session
@@ -161,13 +160,7 @@ The watchdog samples:
 
 It does not rely on a hardcoded prompt-pattern library. Instead it uses heartbeat-style progress detection: if output, cursor, or CPU activity stops changing for long enough, the watchdog emits `stalled`; if the idle period keeps extending, it escalates to `needs-input`; if the agent process exits before completion notify arrives, it emits `failed`.
 
-Manual control:
-
-```bash
-orche session-watch status --session repo-codex-main
-orche session-watch stop --session repo-codex-main
-orche session-watch start --session repo-codex-main
-```
+The watchdog is an internal mechanism. It starts automatically after `send` and does not require a separate user command. If you need visibility, `orche status` shows a short watchdog summary for the current pending turn.
 
 ## CLI Agent Workflow
 
@@ -208,9 +201,6 @@ orche session-new \
 
 # send implementation work to the worker
 orche send --session repo-worker "implement the parser refactor"
-
-# inspect watchdog state for the worker turn
-orche session-watch status --session repo-worker
 
 # later, inspect what the reviewer session received
 orche read --session repo-reviewer --lines 120

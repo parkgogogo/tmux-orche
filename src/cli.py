@@ -43,9 +43,6 @@ from backend import (
     resolve_session_context,
     run_session_watchdog,
     send_prompt,
-    session_watch_status,
-    start_session_watchdog,
-    stop_session_watchdog,
     set_config_value,
     supported_agent_names,
 )
@@ -340,28 +337,14 @@ def _render_status(info: dict) -> None:
     if isinstance(watchdog, dict) and watchdog:
         body.append("\nWatchdog: ", style="bold cyan")
         body.append(str(watchdog.get("state") or "-"))
+        pid = str(watchdog.get("pid") or "").strip()
+        if pid:
+            body.append(f" (pid={pid})")
+        last_event = str(watchdog.get("last_event") or "").strip()
+        if last_event:
+            body.append("\nWatchdog event: ", style="bold cyan")
+            body.append(last_event)
     console.print(Panel.fit(body, title="orche status", border_style="blue"))
-
-
-def _render_watch_status(info: dict) -> None:
-    body = Text()
-    body.append("Session: ", style="bold cyan")
-    body.append(f"{info.get('session', '-')}\n")
-    body.append("Active: ", style="bold cyan")
-    body.append("yes\n" if info.get("active") else "no\n")
-    body.append("Turn: ", style="bold cyan")
-    body.append(f"{info.get('turn_id', '-') or '-'}\n")
-    body.append("State: ", style="bold cyan")
-    body.append(f"{info.get('watchdog_state', '-') or '-'}\n")
-    body.append("PID: ", style="bold cyan")
-    body.append(f"{info.get('watchdog_pid', 0) or '-'}\n")
-    body.append("Alive: ", style="bold cyan")
-    body.append("yes\n" if info.get("watchdog_alive") else "no\n")
-    body.append("Stop requested: ", style="bold cyan")
-    body.append("yes\n" if info.get("watchdog_stop_requested") else "no\n")
-    body.append("Idle seconds: ", style="bold cyan")
-    body.append(f"{float(info.get('watchdog_idle_seconds', 0.0)):.1f}")
-    console.print(Panel.fit(body, title="orche watchdog", border_style="yellow"))
 
 
 @app.callback(invoke_without_command=True)
@@ -801,32 +784,6 @@ def history(
         console.print(line)
 
 
-@app.command("session-watch")
-def session_watch_command(
-    action: str = typer.Argument(..., help="One of: status, start, stop."),
-    session: str = typer.Option(..., "--session", help="Session name."),
-) -> None:
-    try:
-        normalized_action = action.strip().lower()
-        if normalized_action == "status":
-            _render_watch_status(session_watch_status(session))
-            return
-        if normalized_action == "start":
-            pid = start_session_watchdog(session)
-            console.print(f"watchdog started: pid={pid}")
-            return
-        if normalized_action == "stop":
-            pid = stop_session_watchdog(session)
-            if pid:
-                console.print(f"watchdog stopped: pid={pid}")
-            else:
-                console.print("watchdog stopped: no active watchdog")
-            return
-        raise OrcheError("session-watch action must be one of: status, start, stop")
-    except (OrcheError, subprocess.CalledProcessError) as exc:
-        _handle_error(exc)
-
-
 @sessions_app.command("list")
 def sessions_list() -> None:
     sessions = list_sessions()
@@ -887,16 +844,8 @@ def _watchdog_loop_internal_entry(
     watchdog_loop_internal_command(session=session, turn_id=turn_id)
 
 
-def _session_watch_entry(
-    action: str = typer.Argument(..., help="One of: status, start, stop."),
-    session: str = typer.Option(..., "--session", help="Session name."),
-) -> None:
-    session_watch_command(action=action, session=session)
-
-
 app.command("notify-internal", hidden=True)(_notify_internal_entry)
 app.command("watchdog-loop-internal", hidden=True)(_watchdog_loop_internal_entry)
-app.command("session-watch")(_session_watch_entry)
 
 
 def main() -> int:

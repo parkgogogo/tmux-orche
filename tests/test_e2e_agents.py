@@ -410,7 +410,22 @@ def test_claude_e2e_interactive_approval_prompt_can_be_answered(xdg_runtime, tmp
     session = "repo-claude-main"
     runtime.queue_prompt(session, "approval_prompt")
 
-    assert runner.invoke(app, ["session-new", "--cwd", str(runtime.cwd), "--agent", "claude", "--name", session]).exit_code == 0
+    assert runner.invoke(
+        app,
+        [
+            "session-new",
+            "--cwd",
+            str(runtime.cwd),
+            "--agent",
+            "claude",
+            "--name",
+            session,
+            "--notify-to",
+            "discord",
+            "--notify-target",
+            "1234567890",
+        ],
+    ).exit_code == 0
 
     send_result = runner.invoke(app, ["send", "--session", session, "edit the failing test"])
     read_result = runner.invoke(app, ["read", "--session", session, "--lines", "50"])
@@ -436,7 +451,22 @@ def test_claude_e2e_cancel_recovers_from_blocking_prompt_and_keeps_session(xdg_r
     session = "repo-claude-main"
     runtime.queue_prompt(session, "shell_approval_prompt")
 
-    assert runner.invoke(app, ["session-new", "--cwd", str(runtime.cwd), "--agent", "claude", "--name", session]).exit_code == 0
+    assert runner.invoke(
+        app,
+        [
+            "session-new",
+            "--cwd",
+            str(runtime.cwd),
+            "--agent",
+            "claude",
+            "--name",
+            session,
+            "--notify-to",
+            "discord",
+            "--notify-target",
+            "1234567890",
+        ],
+    ).exit_code == 0
     assert runner.invoke(app, ["send", "--session", session, "run the formatter"]).exit_code == 0
 
     blocked_read = runner.invoke(app, ["read", "--session", session, "--lines", "40"])
@@ -468,7 +498,19 @@ def test_claude_e2e_startup_times_out_if_permission_bypass_is_removed(xdg_runtim
 
     result = runner.invoke(
         app,
-        ["session-new", "--cwd", str(runtime.cwd), "--agent", "claude", "--name", session],
+        [
+            "session-new",
+            "--cwd",
+            str(runtime.cwd),
+            "--agent",
+            "claude",
+            "--name",
+            session,
+            "--notify-to",
+            "discord",
+            "--notify-target",
+            "1234567890",
+        ],
     )
 
     assert result.exit_code == 1

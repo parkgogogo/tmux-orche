@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import subprocess
 import sys
 
 from typer.testing import CliRunner
@@ -71,6 +72,27 @@ def test_backend_list_sessions_returns_sorted_metadata(xdg_runtime):
 
     assert [entry["session"] for entry in sessions] == ["alpha-session", "zeta-session"]
     assert sessions[0]["cwd"] == "/tmp/alpha"
+
+
+def test_current_session_id_prefers_orche_session_env(xdg_runtime, monkeypatch):
+    monkeypatch.setenv("ORCHE_SESSION", "env-session")
+    monkeypatch.setattr(backend, "tmux", lambda *args, **kwargs: subprocess.CompletedProcess(["tmux"], 1, "", ""))
+
+    assert backend.current_session_id() == "env-session"
+
+
+def test_current_session_id_falls_back_to_tmux_pane_mapping(xdg_runtime, monkeypatch):
+    monkeypatch.delenv("ORCHE_SESSION", raising=False)
+
+    def fake_tmux(*args, **kwargs):
+        if list(args) == ["display-message", "-p", "#{pane_id}"]:
+            return subprocess.CompletedProcess(["tmux"], 0, "%7\n", "")
+        return subprocess.CompletedProcess(["tmux"], 1, "", "")
+
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+    monkeypatch.setattr(backend, "list_sessions", lambda: [{"session": "mapped-session", "pane_id": "%7"}])
+
+    assert backend.current_session_id() == "mapped-session"
 
 
 def test_sessions_list_command_shows_sessions(xdg_runtime):
@@ -179,6 +201,24 @@ def test_version_works_without_subcommand(xdg_runtime):
     assert result.stdout.strip().startswith("orche ")
 
 
+def test_session_id_reads_orche_session_env(xdg_runtime, monkeypatch):
+    monkeypatch.setenv("ORCHE_SESSION", "demo-session")
+
+    result = CliRunner().invoke(app, ["session-id"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "demo-session"
+
+
+def test_whoami_falls_back_to_backend_resolution(xdg_runtime, monkeypatch):
+    monkeypatch.setattr(cli, "current_session_id", lambda: "resolved-from-tmux")
+
+    result = CliRunner().invoke(app, ["whoami"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "resolved-from-tmux"
+
+
 def test_session_new_expands_cwd_user_home(xdg_runtime, monkeypatch):
     runner = CliRunner()
     project_dir = xdg_runtime["home"] / "project"
@@ -194,7 +234,20 @@ def test_session_new_expands_cwd_user_home(xdg_runtime, monkeypatch):
     monkeypatch.setattr(cli, "ensure_session", fake_ensure_session)
     monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
 
-    result = runner.invoke(app, ["session-new", "--cwd", "~/project", "--agent", "codex"])
+    result = runner.invoke(
+        app,
+        [
+            "session-new",
+            "--cwd",
+            "~/project",
+            "--agent",
+            "codex",
+            "--notify-to",
+            "discord",
+            "--notify-target",
+            "1234567890",
+        ],
+    )
 
     assert result.exit_code == 0
     assert captured["cwd"] == project_dir.resolve()
@@ -256,7 +309,27 @@ def test_session_new_rejects_partial_notify_binding(xdg_runtime):
     )
 
     assert result.exit_code == 1
-    assert "--notify-to and --notify-target must be provided together" in result.output
+    assert "session-new requires both --notify-to and --notify-target" in result.output
+
+
+def test_session_new_requires_notify_binding(xdg_runtime):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "session-new",
+            "--cwd",
+            "~/project",
+            "--agent",
+            "codex",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "session-new requires both --notify-to and --notify-target" in result.output
 
 
 def test_codex_command_passes_native_args_and_attaches(xdg_runtime, monkeypatch):

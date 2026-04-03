@@ -26,6 +26,7 @@ from backend import (
     build_status,
     cancel_session,
     close_session,
+    current_session_id,
     default_session_name,
     ensure_native_session,
     ensure_session,
@@ -257,6 +258,8 @@ def _start_agent_session(
     notify_to: Optional[str],
     notify_target: Optional[str],
 ) -> None:
+    if not str(notify_to or "").strip() or not str(notify_target or "").strip():
+        raise OrcheError("session-new requires both --notify-to and --notify-target")
     session = _session_name(name, cwd, agent)
     pane_id = ensure_session(
         session,
@@ -343,6 +346,19 @@ def main_callback(
 @app.command("backend")
 def backend() -> None:
     console.print(BACKEND)
+
+
+@app.command("session-id")
+def session_id() -> None:
+    try:
+        console.print(current_session_id())
+    except (OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
+
+
+@app.command("whoami")
+def whoami() -> None:
+    session_id()
 
 
 @config_app.command("get")

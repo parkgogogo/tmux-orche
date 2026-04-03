@@ -110,8 +110,8 @@ class E2EContext:
         self,
         suffix: str,
         *,
-        notify_to: str = "",
-        notify_target: str = "",
+        notify_to: str = "discord",
+        notify_target: str = "1111111111",
     ) -> str:
         session = f"orche-e2e-{suffix}-{uuid.uuid4().hex[:8]}"
         args = [
@@ -123,8 +123,7 @@ class E2EContext:
             "--name",
             session,
         ]
-        if notify_to:
-            args.extend(["--notify-to", notify_to, "--notify-target", notify_target])
+        args.extend(["--notify-to", notify_to, "--notify-target", notify_target])
         result = self.run(args, timeout=E2E_TIMEOUT)
         _assert_ok(result)
         self.sessions.append(session)

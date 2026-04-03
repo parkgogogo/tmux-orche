@@ -473,6 +473,13 @@ def list_sessions() -> List[Dict[str, Any]]:
     return sessions
 
 
+def _current_tmux_value(fmt: str) -> str:
+    result = tmux("display-message", "-p", fmt, check=False, capture=True)
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
 def load_config() -> Dict[str, Any]:
     ensure_directories()
     default = {
@@ -1204,27 +1211,23 @@ def ensure_session(
             f"Session {session} is already bound to agent={existing_agent}. "
             "Close the session and create a new one for a different agent."
         )
+    existing_notify_binding = _read_notify_binding(existing_meta)
     provided_notify_to = str(notify_to or "").strip()
     provided_notify_target = str(notify_target or "").strip()
-    if bool(provided_notify_to) != bool(provided_notify_target):
-        raise OrcheError("--notify-to and --notify-target must be provided together")
-    existing_notify_binding = _read_notify_binding(existing_meta)
+    if (not provided_notify_to or not provided_notify_target) and not existing_notify_binding:
+        raise OrcheError("session-new requires both --notify-to and --notify-target")
     provided_notify_binding = (
         build_notify_binding(provided_notify_to, provided_notify_target)
-        if provided_notify_to
-        else {}
+        if provided_notify_to and provided_notify_target
+        else existing_notify_binding
     )
-    if existing_meta and provided_notify_binding != existing_notify_binding and provided_notify_binding:
+    if existing_meta and provided_notify_binding != existing_notify_binding:
         if existing_notify_binding:
             raise OrcheError(
                 f"Session {session} is already bound to notify_to={existing_notify_binding['provider']} "
                 f"notify_target={existing_notify_binding['target']}. "
                 "Use the same notify binding or close the session and create a new one."
             )
-        raise OrcheError(
-            f"Session {session} was created without a notify target. "
-            "Close the session and create a new one to add --notify-to/--notify-target."
-        )
     resolved_notify_binding = existing_notify_binding or provided_notify_binding
     resolved_discord_channel_id = (
         resolved_notify_binding.get("target")
@@ -1422,6 +1425,36 @@ def resolve_session_context(
     if require_cwd_agent and (cwd is None or agent is None):
         raise OrcheError(f"Session {session} is missing cwd/agent context; create it with session-new first")
     return cwd, agent, meta
+
+
+def current_session_id() -> str:
+    env_session = str(os.environ.get("ORCHE_SESSION") or "").strip()
+    if env_session:
+        return env_session
+
+    current_pane_id = _current_tmux_value("#{pane_id}")
+    if current_pane_id:
+        for entry in list_sessions():
+            if str(entry.get("pane_id") or "").strip() == current_pane_id:
+                session = str(entry.get("session") or "").strip()
+                if session:
+                    return session
+
+    pane_title = _current_tmux_value("#{pane_title}")
+    if pane_title:
+        meta = load_meta(pane_title)
+        if meta:
+            return str(meta.get("session") or pane_title).strip()
+
+    window_name = _current_tmux_value("#{window_name}")
+    if window_name:
+        for entry in list_sessions():
+            if str(entry.get("window_name") or "").strip() == window_name:
+                session = str(entry.get("session") or "").strip()
+                if session:
+                    return session
+
+    raise OrcheError("Unable to resolve current orche session id. Set ORCHE_SESSION or run inside an orche tmux pane.")
 
 
 def cancel_session(session: str) -> str:

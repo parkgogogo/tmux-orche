@@ -129,7 +129,13 @@ def test_ensure_session_reuses_managed_codex_home_with_normalized_path(xdg_runti
         },
     )
 
-    pane_id = backend.ensure_session("demo-session", tmp_path, "codex")
+    pane_id = backend.ensure_session(
+        "demo-session",
+        tmp_path,
+        "codex",
+        notify_to="discord",
+        notify_target="123",
+    )
     meta = backend.load_meta("demo-session")
 
     assert pane_id == "%1"
@@ -271,7 +277,13 @@ def test_ensure_session_rejects_rebinding_session_to_different_cwd(xdg_runtime, 
     )
 
     try:
-        backend.ensure_session("bound-session", second_cwd, "codex")
+        backend.ensure_session(
+            "bound-session",
+            second_cwd,
+            "codex",
+            notify_to="discord",
+            notify_target="123",
+        )
     except backend.OrcheError as exc:
         assert "already bound to cwd=" in str(exc)
     else:  # pragma: no cover
@@ -295,7 +307,7 @@ def test_ensure_session_rejects_rebinding_notify_binding(xdg_runtime, tmp_path, 
         backend.ensure_session("notify-bound", tmp_path, "codex", notify_to="discord", notify_target="456")
 
 
-def test_ensure_session_rejects_adding_tmux_target_after_creation(xdg_runtime, tmp_path, monkeypatch):
+def test_ensure_session_requires_notify_binding(xdg_runtime, tmp_path, monkeypatch):
     source_home = tmp_path / "source-codex"
     source_home.mkdir()
     (source_home / "hooks").mkdir()
@@ -306,10 +318,8 @@ def test_ensure_session_rejects_adding_tmux_target_after_creation(xdg_runtime, t
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
     monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%1")
 
-    backend.ensure_session("notify-bound", tmp_path, "codex")
-
-    with pytest.raises(backend.OrcheError, match="created without a notify target"):
-        backend.ensure_session("notify-bound", tmp_path, "codex", notify_to="tmux-bridge", notify_target="target-session")
+    with pytest.raises(backend.OrcheError, match="session-new requires both --notify-to and --notify-target"):
+        backend.ensure_session("notify-bound", tmp_path, "codex")
 
 
 def test_ensure_session_stores_tmux_bridge_notify_binding(xdg_runtime, tmp_path, monkeypatch):

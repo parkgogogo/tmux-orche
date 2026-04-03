@@ -1,6 +1,6 @@
 ---
 name: orche
-description: Use `orche` when OpenClaw or another agent needs to delegate work to a supported CLI agent in a persistent tmux session and return immediately. Use it for managed `session-new` handoff, single-channel notify bindings, reusing sessions, checking status, reading output, reviewing session history, closing finished sessions, or managing shared runtime config.
+description: Use `orche` when OpenClaw or another agent needs to delegate work to a supported CLI agent in a persistent tmux session and return immediately. Use it for managed `session-new` handoff, required single-channel notify bindings, querying the current session id from inside tmux, reusing sessions, checking status, reading output, reviewing session history, closing finished sessions, or managing shared runtime config.
 ---
 
 # orche
@@ -18,7 +18,7 @@ Use `orche` as the handoff boundary between OpenClaw and a long-running tmux-bac
 ## Quick Start
 
 ```bash
-# Create or reuse a managed Codex session with a single notify binding
+# Create or reuse a managed Codex session with a required single notify binding
 orche session-new --cwd /repo --agent codex --name repo-codex-main --notify-to tmux-bridge --notify-target repo-codex-reviewer
 
 # Send work and return immediately
@@ -29,15 +29,19 @@ orche status --session repo-codex-main
 orche read --session repo-codex-main --lines 80
 orche history --session repo-codex-main --limit 20
 
+# Query the current session id from inside the agent tmux pane
+orche session-id
+
 ```
 
 ## Commands
 
-- `session-new`: create or reuse a persistent managed tmux session with orche metadata, optional managed runtime home, and an optional single notify binding
+- `session-new`: create or reuse a persistent managed tmux session with orche metadata, optional managed runtime home, and a required single notify binding
 - `send`: send a task into an existing managed session and return immediately
 - `status`: show whether the session and agent process are still running
 - `read`: inspect recent terminal output from the live session
 - `history`: inspect recent local control actions for that session
+- `session-id`, `whoami`: print the current orche session id from `ORCHE_SESSION` or tmux metadata
 - `close`: terminate the session when it is no longer needed
 - `config`: read and update shared runtime configuration
 
@@ -45,7 +49,7 @@ Use `session-new` for AI-driven delegation flows where orche needs to preserve s
 
 ## Notify
 
-Set exactly one notify channel at session creation time with `session-new`:
+Set exactly one notify channel at session creation time with `session-new`. `--notify-to` and `--notify-target` are required:
 
 ```bash
 orche session-new \
@@ -64,6 +68,8 @@ Current built-in providers include:
 - `tmux-bridge`: use a target tmux session name as `--notify-target`
 
 Notify is single-channel per session. To change the notify target or provider, close the session and create a new one.
+
+Inside a managed tmux pane, use `orche session-id` or `orche whoami` to discover the current session id before wiring a target session or other notify flow.
 
 ## Config
 

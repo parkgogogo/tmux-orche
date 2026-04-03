@@ -6,6 +6,7 @@ from .models import DeliveryResult, NotifyEvent, ResolvedRoute
 from .payload import build_message_from_payload, parse_payload
 from .registry import DEFAULT_REGISTRY, NotifierRegistry
 from .service import NotificationService, dispatch_payload, resolve_routes
+from .tmux_bridge import TmuxBridgeNotifier
 
 __all__ = [
     "DEFAULT_REGISTRY",
@@ -22,6 +23,7 @@ __all__ = [
     "NotifyDeliveryError",
     "NotifyError",
     "ResolvedRoute",
+    "TmuxBridgeNotifier",
     "UrllibHTTPClient",
     "build_message_from_payload",
     "dispatch_payload",

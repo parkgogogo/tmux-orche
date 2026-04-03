@@ -7,6 +7,7 @@ from .config import NotifyConfig
 from .discord import DiscordNotifier
 from .exceptions import NotifyConfigError
 from .http import HTTPClient
+from .tmux_bridge import TmuxBridgeNotifier
 
 NotifierFactory = Callable[[NotifyConfig, Optional[HTTPClient]], Notifier]
 
@@ -41,5 +42,11 @@ def _discord_factory(config: NotifyConfig, http_client: HTTPClient | None) -> No
     return DiscordNotifier(config, http_client=http_client)
 
 
+def _tmux_bridge_factory(config: NotifyConfig, http_client: HTTPClient | None) -> Notifier:
+    _ = http_client
+    return TmuxBridgeNotifier(config)
+
+
 DEFAULT_REGISTRY = NotifierRegistry()
 DEFAULT_REGISTRY.register("discord", _discord_factory)
+DEFAULT_REGISTRY.register("tmux-bridge", _tmux_bridge_factory)

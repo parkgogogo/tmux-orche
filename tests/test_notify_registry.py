@@ -6,7 +6,7 @@ from notify.base import Notifier
 from notify.config import NotifyConfig
 from notify.exceptions import NotifyConfigError
 from notify.models import DeliveryResult
-from notify.registry import NotifierRegistry
+from notify.registry import DEFAULT_REGISTRY, NotifierRegistry
 
 
 class DummyNotifier(Notifier):
@@ -30,3 +30,9 @@ def test_registry_rejects_unknown_provider():
 
     with pytest.raises(NotifyConfigError):
         registry.create_many(NotifyConfig(providers=("telegram",)))
+
+
+def test_default_registry_supports_tmux_bridge_provider():
+    notifiers = DEFAULT_REGISTRY.create_many(NotifyConfig(providers=("tmux-bridge",)))
+
+    assert [notifier.name for notifier in notifiers] == ["tmux-bridge"]

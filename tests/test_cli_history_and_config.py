@@ -4,12 +4,19 @@ from pathlib import Path
 
 import subprocess
 import sys
+import re
 
 from typer.testing import CliRunner
 
 import backend
 import cli
 from cli import app
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain_output(result) -> str:
+    return ANSI_ESCAPE_RE.sub("", result.output)
 
 
 def test_backend_list_sessions_returns_sorted_metadata(xdg_runtime):
@@ -148,7 +155,7 @@ def test_short_help_works_without_subcommand(xdg_runtime):
     result = CliRunner().invoke(app, ["-h"])
 
     assert result.exit_code == 0
-    assert "Usage: orche" in result.stdout
+    assert "Usage: orche" in _plain_output(result)
 
 
 def test_short_version_works_without_subcommand(xdg_runtime):
@@ -162,21 +169,21 @@ def test_config_group_supports_short_help(xdg_runtime):
     result = CliRunner().invoke(app, ["config", "-h"])
 
     assert result.exit_code == 0
-    assert "Usage: orche config" in result.stdout
+    assert "Usage: orche config" in _plain_output(result)
 
 
 def test_config_group_does_not_accept_short_version(xdg_runtime):
     result = CliRunner().invoke(app, ["config", "-v"])
 
     assert result.exit_code == 2
-    assert "No such option: -v" in result.stdout
+    assert "No such option: -v" in _plain_output(result)
 
 
 def test_leaf_commands_do_not_gain_short_help_aliases(xdg_runtime):
     result = CliRunner().invoke(app, ["attach", "-h"])
 
     assert result.exit_code == 2
-    assert "No such option: -h" in result.stdout
+    assert "No such option: -h" in _plain_output(result)
 
 
 def test_whoami_falls_back_to_backend_resolution(xdg_runtime, monkeypatch):

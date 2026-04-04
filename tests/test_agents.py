@@ -83,4 +83,4 @@ def test_orche_shim_executes_repo_cli(xdg_runtime):
     content = shim.read_text(encoding="utf-8")
 
     assert "sys.path.insert(0," in content
-    assert "/workspace/repo/orche/src" in content
+    assert str(Path(backend.__file__).resolve().parent) in content

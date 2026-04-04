@@ -102,6 +102,21 @@ The normal loop is:
 
 ## Quick Start
 
+### Fast native attach shortcuts
+
+Open a new native session in the current directory and attach immediately:
+
+```bash
+orche codex --model gpt-5.4
+orche claude -- --print --help
+```
+
+These shortcuts:
+
+- always use the current directory as `cwd`
+- forward trailing args to the underlying agent CLI
+- create a fresh session name like `<repo>-<agent>-<random>`
+
 ### Reviewer-worker loop via tmux bridge
 
 Open a reviewer that receives worker results:
@@ -207,6 +222,8 @@ Rules:
 
 - `orche open`
   Create or reuse a named control endpoint.
+- `orche codex` / `orche claude`
+  Open a fresh native session for the current directory and attach immediately.
 - `orche prompt`
   Delegate work into an existing session.
 - `orche status`

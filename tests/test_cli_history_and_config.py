@@ -144,6 +144,41 @@ def test_version_works_without_subcommand(xdg_runtime):
     assert result.stdout.strip().startswith("orche ")
 
 
+def test_short_help_works_without_subcommand(xdg_runtime):
+    result = CliRunner().invoke(app, ["-h"])
+
+    assert result.exit_code == 0
+    assert "Usage: orche" in result.stdout
+
+
+def test_short_version_works_without_subcommand(xdg_runtime):
+    result = CliRunner().invoke(app, ["-v"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip().startswith("orche ")
+
+
+def test_config_group_supports_short_help(xdg_runtime):
+    result = CliRunner().invoke(app, ["config", "-h"])
+
+    assert result.exit_code == 0
+    assert "Usage: orche config" in result.stdout
+
+
+def test_config_group_does_not_accept_short_version(xdg_runtime):
+    result = CliRunner().invoke(app, ["config", "-v"])
+
+    assert result.exit_code == 2
+    assert "No such option: -v" in result.stdout
+
+
+def test_leaf_commands_do_not_gain_short_help_aliases(xdg_runtime):
+    result = CliRunner().invoke(app, ["attach", "-h"])
+
+    assert result.exit_code == 2
+    assert "No such option: -h" in result.stdout
+
+
 def test_whoami_falls_back_to_backend_resolution(xdg_runtime, monkeypatch):
     monkeypatch.setattr(cli, "current_session_id", lambda: "resolved-from-tmux")
 
@@ -280,6 +315,74 @@ def test_attach_command_uses_session_name_positionally(xdg_runtime, monkeypatch)
     assert result.exit_code == 0
     assert recorded["session"] == "demo-session"
     assert recorded["action"] == "attach"
+
+
+def test_codex_shortcut_opens_native_session_and_attaches(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    monkeypatch.chdir(project_dir)
+    monkeypatch.setattr(cli.secrets, "token_hex", lambda nbytes: "abc123")
+
+    def fake_ensure_native_session(session, cwd, agent, **kwargs):
+        captured["open"] = {
+            "session": session,
+            "cwd": cwd,
+            "agent": agent,
+            "cli_args": kwargs.get("cli_args"),
+        }
+        return "%9"
+
+    def fake_attach_session(session, **kwargs):
+        captured["attach"] = {"session": session, **kwargs}
+        return "@1"
+
+    monkeypatch.setattr(cli, "ensure_native_session", fake_ensure_native_session)
+    monkeypatch.setattr(cli, "attach_session", fake_attach_session)
+    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_record_session_action", lambda session, action, **kwargs: captured.update({"recorded": {"session": session, "action": action, **kwargs}}))
+
+    result = runner.invoke(app, ["codex", "--model", "gpt-5.4"])
+
+    assert result.exit_code == 0
+    assert captured["open"] == {
+        "session": "project-codex-abc123",
+        "cwd": project_dir.resolve(),
+        "agent": "codex",
+        "cli_args": ["--model", "gpt-5.4"],
+    }
+    assert captured["attach"] == {"session": "project-codex-abc123", "pane_id": "%9"}
+    assert captured["recorded"] == {"session": "project-codex-abc123", "action": "attach"}
+
+
+def test_claude_shortcut_generates_unique_sessions_and_forwards_raw_args(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+    token_values = iter(["abc123", "def456"])
+    sessions: list[str] = []
+    cli_args: list[list[str]] = []
+
+    monkeypatch.chdir(project_dir)
+    monkeypatch.setattr(cli.secrets, "token_hex", lambda nbytes: next(token_values))
+    monkeypatch.setattr(
+        cli,
+        "ensure_native_session",
+        lambda session, cwd, agent, **kwargs: sessions.append(session) or cli_args.append(list(kwargs.get("cli_args") or [])) or "%3",
+    )
+    monkeypatch.setattr(cli, "attach_session", lambda *args, **kwargs: "@1")
+    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_record_session_action", lambda *args, **kwargs: None)
+
+    first = runner.invoke(app, ["claude", "--", "--print", "--help"])
+    second = runner.invoke(app, ["claude"])
+
+    assert first.exit_code == 0
+    assert second.exit_code == 0
+    assert sessions == ["project-claude-abc123", "project-claude-def456"]
+    assert cli_args == [["--print", "--help"], []]
 
 
 def test_prompt_command_uses_positionals(xdg_runtime, monkeypatch):

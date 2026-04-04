@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.8 - 2026-04-04
+
+- Add `orche codex` and `orche claude` shortcut commands that open a fresh native session in the current directory and attach immediately.
+- Generate unique shortcut session names with a random suffix so repeated launches in the same repo do not collide.
+- Support `-h` on the root command and command groups, plus `-v` on the root command, without expanding short aliases to leaf commands.
+
 ## v0.4.3 - 2026-04-03
 
 - Fix Discord notify routing so session-scoped deliveries prefer the session metadata `discord_channel_id` instead of whichever channel was most recently written into global runtime config.

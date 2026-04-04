@@ -102,6 +102,21 @@ pip install .
 
 ## 快速开始
 
+### 原生打开并立即接管的快捷命令
+
+在当前目录打开一个新的 native session 并立刻 attach：
+
+```bash
+orche codex --model gpt-5.4
+orche claude -- --print --help
+```
+
+这些快捷命令会：
+
+- 始终把当前目录作为 `cwd`
+- 把后续参数透传给底层 agent CLI
+- 生成一个新的 session 名，例如 `<repo>-<agent>-<random>`
+
 ### 通过 tmux bridge 构建 reviewer-worker 闭环
 
 先打开 reviewer：
@@ -207,6 +222,8 @@ orche open --cwd /repo --agent claude -- --print --help
 
 - `orche open`
   创建或复用一个可寻址的 control endpoint。
+- `orche codex` / `orche claude`
+  为当前目录打开一个新的 native session，并立即 attach。
 - `orche prompt`
   往现有 session 委派工作。
 - `orche status`

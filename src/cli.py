@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from typer.core import TyperGroup
 
 from backend import (
     BACKEND,
@@ -58,14 +60,25 @@ from notify import (
 from paths import ensure_directories
 from version import __version__
 
+
+class ShortHelpTyperGroup(TyperGroup):
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if args and args[0] == "-h":
+            args = ["--help", *args[1:]]
+        return super().parse_args(ctx, args)
+
 app = typer.Typer(
     name="orche",
+    cls=ShortHelpTyperGroup,
     no_args_is_help=False,
     rich_markup_mode="rich",
     help="Persistent tmux-backed agent sessions.",
     add_completion=False,
 )
-config_app = typer.Typer(help="Manage shared runtime configuration.")
+config_app = typer.Typer(
+    cls=ShortHelpTyperGroup,
+    help="Manage shared runtime configuration.",
+)
 app.add_typer(config_app, name="config")
 console = Console()
 stderr = Console(stderr=True)
@@ -199,6 +212,10 @@ def _session_name(name: Optional[str], cwd: Path, agent: str) -> str:
     return name or default_session_name(cwd.resolve(), agent, "main")
 
 
+def _shortcut_session_name(cwd: Path, agent: str) -> str:
+    return default_session_name(cwd.resolve(), agent, secrets.token_hex(3))
+
+
 def _default_cwd() -> Path:
     return Path.cwd().resolve()
 
@@ -304,7 +321,7 @@ def _open_session(
     name: Optional[str],
     notify: Optional[str],
     cli_args: list[str],
-) -> None:
+) -> tuple[str, str]:
     session = _session_name(name, cwd, agent)
     notify_to, notify_target = _parse_notify_binding(notify)
     if cli_args and notify_to:
@@ -325,7 +342,20 @@ def _open_session(
             cli_args=cli_args,
         )
     append_action_history(session, cwd.resolve(), agent, "open", pane_id=pane_id)
-    console.print(session)
+    return session, pane_id
+
+
+def _open_shortcut_session(ctx: typer.Context, agent: str) -> tuple[str, str]:
+    resolved_cwd = _resolve_path(_default_cwd(), must_exist=True, require_dir=True)
+    if resolved_cwd is None:
+        raise OrcheError("Failed to resolve cwd")
+    return _open_session(
+        cwd=resolved_cwd,
+        agent=agent,
+        name=_shortcut_session_name(resolved_cwd, agent),
+        notify=None,
+        cli_args=list(ctx.args),
+    )
 
 
 def _record_session_action(session: str, action: str, **fields: object) -> None:
@@ -337,7 +367,7 @@ def _record_session_action(session: str, action: str, **fields: object) -> None:
 @app.callback(invoke_without_command=True)
 def main_callback(
     ctx: typer.Context,
-    version: Optional[bool] = typer.Option(None, "--version", help="Show version and exit."),
+    version: Optional[bool] = typer.Option(None, "--version", "-v", help="Show version and exit."),
 ) -> None:
     ensure_directories()
     if version:
@@ -413,13 +443,14 @@ def open_session(
         resolved_cwd = _resolve_path(cwd or _default_cwd(), must_exist=True, require_dir=True)
         if resolved_cwd is None:
             raise OrcheError("Failed to resolve cwd")
-        _open_session(
+        session, _pane_id = _open_session(
             cwd=resolved_cwd,
             agent=agent,
             name=name,
             notify=notify,
             cli_args=list(ctx.args),
         )
+        console.print(session)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
 
@@ -432,6 +463,26 @@ def attach(
         attach_session(session)
         _record_session_action(session, "attach")
         console.print(session)
+    except (OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
+
+
+@app.command("codex", context_settings=_OPEN_CONTEXT)
+def codex_shortcut(ctx: typer.Context) -> None:
+    try:
+        session, pane_id = _open_shortcut_session(ctx, "codex")
+        attach_session(session, pane_id=pane_id)
+        _record_session_action(session, "attach")
+    except (OrcheError, subprocess.CalledProcessError) as exc:
+        _handle_error(exc)
+
+
+@app.command("claude", context_settings=_OPEN_CONTEXT)
+def claude_shortcut(ctx: typer.Context) -> None:
+    try:
+        session, pane_id = _open_shortcut_session(ctx, "claude")
+        attach_session(session, pane_id=pane_id)
+        _record_session_action(session, "attach")
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)
 

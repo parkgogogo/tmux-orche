@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import backend
+import pytest
 
 
 def test_supported_agents_include_codex_and_claude():
@@ -84,3 +85,30 @@ def test_orche_shim_executes_repo_cli(xdg_runtime):
 
     assert "sys.path.insert(0," in content
     assert str(Path(backend.__file__).resolve().parent) in content
+
+
+def test_build_native_agent_launch_command_checks_cli_presence(xdg_runtime, tmp_path):
+    plugin = backend.get_agent("codex")
+
+    command = backend.build_native_agent_launch_command(
+        plugin,
+        session="demo-codex",
+        cwd=tmp_path,
+        cli_args=["--model", "gpt-5.4"],
+    )
+
+    assert "command -v codex" in command
+    assert "orche launch error: Codex CLI not found in PATH." in command
+    assert "exec codex --model gpt-5.4" in command
+
+
+def test_wait_for_agent_process_start_surfaces_explicit_launch_error(monkeypatch):
+    plugin = backend.get_agent("codex")
+    capture = "orche launch error: Codex CLI not found in PATH. Install codex or add it to PATH."
+
+    monkeypatch.setattr(backend, "read_pane", lambda pane_id, lines=backend.DEFAULT_CAPTURE_LINES: capture)
+    monkeypatch.setattr(backend, "get_pane_info", lambda pane_id: {"pane_dead": "0"})
+    monkeypatch.setattr(backend, "is_agent_running", lambda plugin, pane_id: False)
+
+    with pytest.raises(backend.OrcheError, match="Codex CLI not found in PATH"):
+        backend.wait_for_agent_process_start(plugin, "%1", timeout=0.1)

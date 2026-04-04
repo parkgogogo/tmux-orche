@@ -41,6 +41,7 @@ WATCHDOG_STALLED_AFTER = 45.0
 WATCHDOG_NEEDS_INPUT_AFTER = 120.0
 WATCHDOG_REMINDER_AFTER = 600.0
 WATCHDOG_ACTIVE_CPU_THRESHOLD = 5.0
+LAUNCH_ERROR_PREFIX = "orche launch error:"
 CONFIG_COMMENT = (
     "orche runtime config. session is the active orche agent session label; "
     "discord_session is the Discord/OpenClaw session key used for notify routing."
@@ -1233,14 +1234,23 @@ def wait_for_agent_process_start(
     while time.time() <= deadline:
         capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES)
         last_capture = capture
+        launch_error = extract_launch_error(capture)
+        if launch_error:
+            raise OrcheError(launch_error)
         if any(prompt in capture for prompt in plugin.login_prompts):
             return pane_id
         info = get_pane_info(pane_id)
         if info is None or info.get("pane_dead") == "1":
+            launch_error = extract_launch_error(last_capture)
+            if launch_error:
+                raise OrcheError(launch_error)
             raise OrcheError(f"{plugin.display_name} pane exited before launch completed: {pane_id}")
         if is_agent_running(plugin, pane_id):
             return pane_id
         time.sleep(0.5)
+    launch_error = extract_launch_error(last_capture)
+    if launch_error:
+        raise OrcheError(launch_error)
     if last_capture.strip():
         return pane_id
     raise OrcheError(f"Timed out waiting for {plugin.display_name} process to start in {pane_id}")
@@ -1393,8 +1403,25 @@ def build_native_agent_launch_command(
     prefix.append(f"export PATH={shlex.quote(str(orche_shim.parent))}:$PATH")
     if session:
         prefix.append(f"export ORCHE_SESSION={shlex.quote(session)}")
+    launch_error = (
+        f"{LAUNCH_ERROR_PREFIX} {plugin.display_name} CLI not found in PATH. "
+        f"Install {plugin.name} or add it to PATH."
+    )
+    prefix.append(
+        "if ! command -v "
+        f"{shlex.quote(plugin.name)} >/dev/null 2>&1; "
+        f"then printf '%s\\n' {shlex.quote(launch_error)} >&2; sleep 2; exit 127; fi"
+    )
     prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
     return " && ".join(prefix)
+
+
+def extract_launch_error(capture: str) -> str:
+    for line in capture.splitlines():
+        text = str(line or "").strip()
+        if text.startswith(LAUNCH_ERROR_PREFIX):
+            return text[len(LAUNCH_ERROR_PREFIX) :].strip()
+    return ""
 
 
 def ensure_native_agent_running(

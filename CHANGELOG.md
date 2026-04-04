@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.10 - 2026-04-04
+
+- Avoid tmux window creation failures like `index 0 in use` by explicitly targeting the next available window index when opening new `orche` windows.
+- Add regression coverage for window-index allocation so new sessions remain stable in tmux layouts with sparse or preoccupied indexes.
+- Make CI assertions environment-safe by removing hard-coded repo paths and normalizing Rich ANSI output in CLI tests.
+
 ## v0.4.9 - 2026-04-04
 
 - Export `ORCHE_SESSION` for native Codex and Claude launches so agents can reliably resolve their current session from inside the worker pane.

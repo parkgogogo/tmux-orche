@@ -1211,6 +1211,30 @@ def wait_for_agent_ready(plugin: AgentPlugin, pane_id: str, cwd: Path, *, timeou
     raise OrcheError(f"Timed out waiting for {plugin.display_name} to become ready in {pane_id}")
 
 
+def wait_for_agent_process_start(
+    plugin: AgentPlugin,
+    pane_id: str,
+    *,
+    timeout: float = STARTUP_TIMEOUT,
+) -> str:
+    deadline = time.time() + timeout
+    last_capture = ""
+    while time.time() <= deadline:
+        capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES)
+        last_capture = capture
+        if any(prompt in capture for prompt in plugin.login_prompts):
+            return pane_id
+        info = get_pane_info(pane_id)
+        if info is None or info.get("pane_dead") == "1":
+            raise OrcheError(f"{plugin.display_name} pane exited before launch completed: {pane_id}")
+        if is_agent_running(plugin, pane_id):
+            return pane_id
+        time.sleep(0.5)
+    if last_capture.strip():
+        return pane_id
+    raise OrcheError(f"Timed out waiting for {plugin.display_name} process to start in {pane_id}")
+
+
 def ensure_agent_running(
     plugin: AgentPlugin,
     session: str,
@@ -1252,20 +1276,7 @@ def ensure_agent_running(
         capture=True,
     )
     tmux("send-keys", "-t", pane_id, "Enter", check=True, capture=True)
-    try:
-        pane_id = wait_for_agent_ready(plugin, pane_id, cwd)
-    except AgentStartupBlockedError:
-        capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES) if pane_exists(pane_id) else ""
-        emit_internal_notify(
-            session,
-            event="startup-blocked",
-            summary=f"{plugin.display_name} startup blocked before reaching ready state",
-            status="warning",
-            cwd=str(cwd),
-            source="startup",
-            tail_text=recent_capture_excerpt(capture),
-        )
-        raise
+    pane_id = wait_for_agent_process_start(plugin, pane_id)
     bridge_name_pane(pane_id, session)
     meta = load_meta(session)
     meta.update(
@@ -1409,7 +1420,7 @@ def ensure_native_agent_running(
         capture=True,
     )
     tmux("send-keys", "-t", pane_id, "Enter", check=True, capture=True)
-    pane_id = wait_for_agent_ready(plugin, pane_id, cwd)
+    pane_id = wait_for_agent_process_start(plugin, pane_id)
     bridge_name_pane(pane_id, session)
     meta = load_meta(session)
     meta.update(

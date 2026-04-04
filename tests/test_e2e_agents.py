@@ -399,7 +399,7 @@ def test_codex_e2e_session_lifecycle(xdg_runtime, tmp_path, monkeypatch):
     assert backend.load_meta(session) == {}
 
 
-def test_codex_e2e_reports_startup_blocked_when_process_never_reaches_ready(xdg_runtime, tmp_path, monkeypatch):
+def test_codex_e2e_keeps_session_when_startup_is_blocked(xdg_runtime, tmp_path, monkeypatch):
     runtime = make_runtime(monkeypatch, tmp_path)
     runner = CliRunner()
     session = "repo-codex-main"
@@ -419,9 +419,11 @@ def test_codex_e2e_reports_startup_blocked_when_process_never_reaches_ready(xdg_
             "discord:1234567890",
         ],
     )
+    read_result = runner.invoke(app, ["read", session, "--lines", "40"])
 
-    assert open_result.exit_code == 1
-    assert "startup blocked before reaching ready state" in open_result.output
+    assert open_result.exit_code == 0
+    assert session in open_result.output
+    assert "Booting workspace interface" in read_result.stdout
 
 
 def test_claude_e2e_launches_headlessly_without_startup_approval(xdg_runtime, tmp_path, monkeypatch):
@@ -559,7 +561,7 @@ def test_status_reports_pending_turn_watchdog_state(xdg_runtime, tmp_path, monke
     assert "Watchdog:" in status_result.stdout
 
 
-def test_claude_e2e_startup_times_out_if_permission_bypass_is_removed(xdg_runtime, tmp_path, monkeypatch):
+def test_claude_e2e_keeps_session_when_startup_needs_input(xdg_runtime, tmp_path, monkeypatch):
     runtime = make_runtime(monkeypatch, tmp_path)
     runner = CliRunner()
     session = "repo-claude-main"
@@ -586,9 +588,11 @@ def test_claude_e2e_startup_times_out_if_permission_bypass_is_removed(xdg_runtim
             "discord:1234567890",
         ],
     )
+    read_result = runner.invoke(app, ["read", session, "--lines", "40"])
 
-    assert result.exit_code == 1
-    assert "Claude Code startup blocked before reaching ready state" in result.output
+    assert result.exit_code == 0
+    assert session in result.output
+    assert "Approval required to edit files" in read_result.stdout
 
 
 def test_open_native_session_can_attach_interactively(xdg_runtime, tmp_path, monkeypatch):
@@ -640,6 +644,20 @@ def test_codex_shortcut_launches_native_session_and_attaches(xdg_runtime, tmp_pa
     assert backend.load_meta("project-codex-abc123")["pane_id"] == "%1"
     assert "export ORCHE_SESSION=project-codex-abc123" in runtime.launch_commands[-1]
     assert "exec codex --model gpt-5.4" in runtime.launch_commands[-1]
+
+
+def test_codex_shortcut_does_not_wait_for_ready_surface_in_native_mode(xdg_runtime, tmp_path, monkeypatch):
+    runtime = make_runtime(monkeypatch, tmp_path)
+    runner = CliRunner()
+    monkeypatch.chdir(runtime.cwd)
+    monkeypatch.setattr(cli.secrets, "token_hex", lambda nbytes: "abc123")
+    runtime.require_codex_startup_blocked("project-codex-abc123")
+
+    result = runner.invoke(app, ["codex"])
+
+    assert result.exit_code == 0
+    assert runtime.attached_session == backend.TMUX_SESSION or runtime.switched_session == backend.TMUX_SESSION
+    assert backend.load_meta("project-codex-abc123")["pane_id"] == "%1"
 
 
 def test_attach_falls_back_to_attach_session_when_switch_client_has_no_current_client(xdg_runtime, tmp_path, monkeypatch):

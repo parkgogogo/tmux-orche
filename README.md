@@ -247,6 +247,22 @@ Rules:
 - `orche config`
   Read or update shared runtime config.
 
+## CLI Entry Shortcuts
+
+Use the short flags on CLI entry surfaces:
+
+```bash
+orche -h
+orche -v
+orche config -h
+```
+
+Notes:
+
+- `-h` is supported on the root command and command groups
+- `-v` is supported on the root command only
+- leaf commands still use `--help`, for example `orche attach --help`
+
 ## Notify and Routing
 
 Notify is how control loops close.

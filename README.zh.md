@@ -247,6 +247,22 @@ orche open --cwd /repo --agent claude -- --print --help
 - `orche config`
   读取或修改共享运行时配置。
 
+## CLI 入口快捷方式
+
+这些短参数只用于 CLI 入口层：
+
+```bash
+orche -h
+orche -v
+orche config -h
+```
+
+说明：
+
+- `-h` 支持根命令和命令组
+- `-v` 只支持根命令
+- leaf 命令仍然使用 `--help`，例如 `orche attach --help`
+
 ## Notify 和路由
 
 Notify 的作用是把控制闭环收回来。

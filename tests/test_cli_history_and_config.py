@@ -84,6 +84,36 @@ def test_list_command_shows_sessions(xdg_runtime):
     assert "/repo/demo" in result.stdout
 
 
+def test_ensure_window_uses_next_available_tmux_index(xdg_runtime, monkeypatch, tmp_path):
+    calls: list[tuple[str, ...]] = []
+    created = {"value": False}
+
+    def fake_tmux(*args, **kwargs):
+        calls.append(tuple(args))
+        if list(args) == ["has-session", "-t", backend.TMUX_SESSION]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        if list(args[:4]) == ["list-windows", "-t", backend.TMUX_SESSION, "-F"]:
+            fmt = args[4]
+            if fmt == "#{window_index}":
+                return subprocess.CompletedProcess(["tmux", *args], 0, "0\n5\n", "")
+            if fmt == "#{window_id}\t#{window_name}":
+                stdout = "@1\texisting-zero\n@5\texisting-five\n"
+                if created["value"]:
+                    stdout += "@6\torche-demo-worker\n"
+                return subprocess.CompletedProcess(["tmux", *args], 0, stdout, "")
+        if list(args[:3]) == ["new-window", "-d", "-t"]:
+            created["value"] = True
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        return subprocess.CompletedProcess(["tmux", *args], 1, "", "")
+
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    window = backend.ensure_window("orche-demo-worker", tmp_path)
+
+    assert window == {"window_id": "@6", "window_name": "orche-demo-worker"}
+    assert ("new-window", "-d", "-t", "orche:6", "-n", "orche-demo-worker", "-c", str(tmp_path)) in calls
+
+
 def test_config_supports_discord_mention_user_id(xdg_runtime):
     runner = CliRunner()
 

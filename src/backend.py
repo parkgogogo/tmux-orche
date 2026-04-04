@@ -369,6 +369,30 @@ def find_window(name: str) -> Optional[Dict[str, str]]:
     return None
 
 
+def next_window_index(session_name: str) -> int:
+    result = tmux(
+        "list-windows",
+        "-t",
+        session_name,
+        "-F",
+        "#{window_index}",
+        check=False,
+        capture=True,
+    )
+    if result.returncode != 0:
+        return 0
+    indexes: List[int] = []
+    for line in result.stdout.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        try:
+            indexes.append(int(value))
+        except ValueError:
+            continue
+    return (max(indexes) + 1) if indexes else 0
+
+
 def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
     args = ["list-panes"]
     if target:
@@ -974,7 +998,21 @@ def ensure_window(name: str, cwd: Path) -> Dict[str, str]:
         return window
     tmux_session_name = _active_tmux_session()
     if tmux_session_name:
-        tmux("new-window", "-d", "-t", tmux_session_name, "-n", name, "-c", str(cwd), check=True, capture=True)
+        last_error: subprocess.CalledProcessError | None = None
+        for _attempt in range(2):
+            target = f"{tmux_session_name}:{next_window_index(tmux_session_name)}"
+            try:
+                tmux("new-window", "-d", "-t", target, "-n", name, "-c", str(cwd), check=True, capture=True)
+                break
+            except subprocess.CalledProcessError as exc:
+                last_error = exc
+                detail = (exc.stderr or "").strip().lower()
+                if "index" in detail and "in use" in detail:
+                    continue
+                raise
+        else:
+            assert last_error is not None
+            raise last_error
     else:
         tmux("new-session", "-d", "-s", TMUX_SESSION, "-n", name, "-c", str(cwd), check=True, capture=True)
     created = find_window(name)

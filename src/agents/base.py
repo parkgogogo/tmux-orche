@@ -58,6 +58,13 @@ class AgentPlugin(ABC):
     def capture_has_ready_surface(self, capture: str, cwd: Path) -> bool:
         raise NotImplementedError
 
+    def extract_completion_summary(self, capture: str, prompt: str) -> str:
+        _ = (capture, prompt)
+        return ""
+
+    def capture_has_completion_surface(self, capture: str, prompt: str) -> bool:
+        return bool(self.extract_completion_summary(capture, prompt))
+
     def submit_prompt(self, session: str, prompt: str, *, bridge: BridgeIO) -> None:
         if prompt:
             bridge.type(session, prompt)

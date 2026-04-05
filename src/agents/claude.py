@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from pathlib import Path
 
@@ -24,6 +25,76 @@ READY_SURFACE_HINTS = (
     "shift+tab",
     "esc to interrupt",
 )
+
+
+def _compact_prompt_text(value: str) -> str:
+    return " ".join((value or "").split()).strip()
+
+
+def _is_claude_separator(line: str) -> bool:
+    stripped = line.strip()
+    return bool(stripped) and all(ch == "─" for ch in stripped)
+
+
+def _find_claude_prompt_block(lines: list[str], prompt: str) -> tuple[int, int] | None:
+    prompt_inline = _compact_prompt_text(prompt)
+    if not prompt_inline:
+        return None
+    for index, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if not stripped.startswith("❯ "):
+            continue
+        parts = [stripped[2:].strip()]
+        end_index = index
+        cursor = index + 1
+        while cursor < len(lines):
+            continuation = lines[cursor].strip()
+            if not continuation or continuation.startswith(("❯ ", "⏺ ", "⎿ ")):
+                break
+            if _is_claude_separator(continuation):
+                break
+            parts.append(continuation)
+            end_index = cursor
+            cursor += 1
+        rendered_prompt = _compact_prompt_text(" ".join(parts))
+        if rendered_prompt and (rendered_prompt in prompt_inline or prompt_inline in rendered_prompt):
+            return index, end_index
+    return None
+
+
+def _extract_claude_completion_summary(capture: str, prompt: str) -> str:
+    lines = capture.splitlines()
+    prompt_block = _find_claude_prompt_block(lines, prompt)
+    if prompt_block is None:
+        return ""
+    _prompt_start, prompt_end = prompt_block
+    summaries: list[str] = []
+    current_block: list[str] = []
+    for raw_line in lines[prompt_end + 1 :]:
+        stripped = raw_line.strip()
+        if not stripped:
+            if current_block:
+                summaries.append(_compact_prompt_text(" ".join(current_block)))
+                current_block = []
+            continue
+        if stripped.startswith("❯"):
+            break
+        if _is_claude_separator(stripped):
+            continue
+        if stripped.startswith("⎿ "):
+            continue
+        if stripped.startswith("⏺ "):
+            if current_block:
+                summaries.append(_compact_prompt_text(" ".join(current_block)))
+            current_block = [stripped[2:].strip()]
+            continue
+        if not current_block:
+            continue
+        current_block.append(stripped)
+    if current_block:
+        summaries.append(_compact_prompt_text(" ".join(current_block)))
+    cleaned = [summary for summary in summaries if summary and not re.match(r"^⏵⏵\s+", summary)]
+    return cleaned[-1] if cleaned else ""
 
 
 def default_claude_home_path(session: str) -> Path:
@@ -130,6 +201,9 @@ class ClaudeAgent(AgentPlugin):
         has_brand = "claude code" in lowered or "\nclaude" in lowered or " claude" in lowered
         has_context = str(cwd) in capture or any(hint in lowered for hint in READY_SURFACE_HINTS)
         return has_brand and has_context
+
+    def extract_completion_summary(self, capture: str, prompt: str) -> str:
+        return _extract_claude_completion_summary(capture, prompt)
 
     def cleanup_runtime(self, runtime: AgentRuntime) -> None:
         if runtime.home:

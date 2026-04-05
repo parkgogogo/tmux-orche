@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from notify.config import DiscordNotifyConfig, NotifyConfig
 from notify.payload import build_message_from_payload, parse_payload, summarize_assistant_message
 
@@ -180,6 +182,120 @@ def test_build_message_from_payload_accepts_claude_stop_hook_event():
     assert message.event == "completed"
     assert message.session == "claude-session"
     assert message.summary == "Done"
+
+
+def test_build_message_from_payload_prefers_loaded_completed_summary_over_hook_payload():
+    message = build_message_from_payload(
+        '{"hook_event_name":"Stop","session_id":"claude-session","last_assistant_message":"· Hyperspacing…"}',
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={"discord_channel_id": "111"},
+        summary_loader=lambda session: "CLAUDE_FINAL_TOKEN",
+    )
+
+    assert message is not None
+    assert message.event == "completed"
+    assert message.summary == "CLAUDE_FINAL_TOKEN"
+
+
+def test_build_message_from_payload_prefers_transcript_text_for_completed_event(tmp_path):
+    transcript_path = tmp_path / "claude.jsonl"
+    transcript_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {"type": "thinking", "thinking": "internal"},
+                                {"type": "text", "text": "CLAUDE_TRANSCRIPT_TOKEN"},
+                            ]
+                        },
+                    }
+                )
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    message = build_message_from_payload(
+        json.dumps(
+            {
+                "hook_event_name": "Stop",
+                "session_id": "claude-session",
+                "transcript_path": str(transcript_path),
+                "last_assistant_message": "✻ Baking… (thinking)",
+            }
+        ),
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={"discord_channel_id": "111"},
+        summary_loader=lambda session: "PANE_TOKEN",
+    )
+
+    assert message is not None
+    assert message.summary == "CLAUDE_TRANSCRIPT_TOKEN"
+
+
+def test_build_message_from_payload_waits_for_transcript_text_when_stop_hook_arrives_early(tmp_path, monkeypatch):
+    transcript_path = tmp_path / "claude.jsonl"
+    transcript_path.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "thinking", "thinking": "internal"},
+                    ]
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    now = {"value": 0.0}
+
+    def fake_monotonic() -> float:
+        return now["value"]
+
+    def fake_sleep(seconds: float) -> None:
+        transcript_path.write_text(
+            transcript_path.read_text(encoding="utf-8")
+            + json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "CLAUDE_DELAYED_TRANSCRIPT_TOKEN"},
+                        ]
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        now["value"] += seconds
+
+    monkeypatch.setattr("notify.payload.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("notify.payload.time.sleep", fake_sleep)
+
+    message = build_message_from_payload(
+        json.dumps(
+            {
+                "hook_event_name": "Stop",
+                "session_id": "claude-session",
+                "transcript_path": str(transcript_path),
+                "last_assistant_message": "✻ Booping… (running stop hook · thinking)",
+            }
+        ),
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={"discord_channel_id": "111"},
+        summary_loader=lambda session: "",
+    )
+
+    assert message is not None
+    assert message.summary == "CLAUDE_DELAYED_TRANSCRIPT_TOKEN"
 
 
 def test_build_message_from_payload_reads_watchdog_metadata_and_event_aliases():

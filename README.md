@@ -192,6 +192,30 @@ orche attach repo-worker
 
 It is less useful when you only need one short-lived command and do not plan to revisit the session.
 
+## Testing
+
+The repo keeps normal unit/integration tests separate from real end-to-end tests.
+
+Real E2E means:
+
+- real `orche` CLI
+- real `tmux`
+- real `codex`
+- real session-to-session prompt and notify flow
+
+The real E2E suites are:
+
+- `tests/test_notify_e2e.py`
+- `tests/test_session_collaboration_e2e.py`
+
+They are opt-in and require a working local environment:
+
+```bash
+ORCHE_RUN_E2E=1 python3 -m pytest -q tests/test_notify_e2e.py tests/test_session_collaboration_e2e.py
+```
+
+If `tmux` or `codex` is missing, or Codex is not logged in, those suites skip instead of simulating success.
+
 ## Managed vs Native Sessions
 
 ### Managed session

@@ -18,7 +18,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 from paths import ensure_directories, locks_dir
 
-from .base import AgentPlugin, AgentRuntime
+from .base import AgentPlugin, AgentRuntime, BridgeIO
 from .common import (
     DEFAULT_RUNTIME_HOME_ROOT,
     ensure_orche_shim,
@@ -40,6 +40,9 @@ READY_SURFACE_HINTS = (
     "Esc to interrupt",
     "Ctrl-C to interrupt",
 )
+CODEX_SUBMIT_SETTLE_MIN_SECONDS = 0.5
+CODEX_SUBMIT_SETTLE_MAX_SECONDS = 1.5
+CODEX_SUBMIT_SECONDS_PER_CHAR = 0.01
 DEFAULT_CODEX_SOURCE_HOME = Path.home() / ".codex"
 MANAGED_CODEX_RUNTIME_DIRS = {".tmp", "log", "shell_snapshots", "tmp"}
 MANAGED_CODEX_RUNTIME_FILE_GLOBS = ("history.jsonl", "logs_*.sqlite*", "state_*.sqlite*")
@@ -98,6 +101,123 @@ def read_text_or_empty(path: Path) -> str:
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8")
+
+
+def _compact_prompt_text(value: str) -> str:
+    return " ".join((value or "").split()).strip()
+
+
+def codex_submit_settle_seconds(prompt: str) -> float:
+    if not prompt:
+        return 0.0
+    scaled = len(prompt) * CODEX_SUBMIT_SECONDS_PER_CHAR
+    return max(CODEX_SUBMIT_SETTLE_MIN_SECONDS, min(CODEX_SUBMIT_SETTLE_MAX_SECONDS, scaled))
+
+
+def _is_codex_status_line(line: str) -> bool:
+    compact = _compact_prompt_text(line).lower()
+    if not compact:
+        return False
+    if compact.startswith(("tip:", "command:", "chunk id:", "wall time:", "output:")):
+        return True
+    return "gpt-" in compact and "% left" in compact
+
+
+def _is_codex_prompt_continuation(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith(("› ", "• ", "⚠ ", "╭", "╰", "│", "└")):
+        return False
+    return not _is_codex_status_line(stripped)
+
+
+def _find_codex_prompt_block(lines: list[str], prompt: str) -> tuple[int, int] | None:
+    prompt_inline = _compact_prompt_text(prompt)
+    if not prompt_inline:
+        return None
+    for index, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if not stripped.startswith("› "):
+            continue
+        parts = [stripped[2:].strip()]
+        end_index = index
+        cursor = index + 1
+        while cursor < len(lines) and _is_codex_prompt_continuation(lines[cursor]):
+            parts.append(lines[cursor].strip())
+            end_index = cursor
+            cursor += 1
+        rendered_prompt = _compact_prompt_text(" ".join(parts))
+        if rendered_prompt and (rendered_prompt in prompt_inline or prompt_inline in rendered_prompt):
+            return index, end_index
+    return None
+
+
+def _find_next_codex_prompt(lines: list[str], start_index: int) -> int | None:
+    for index in range(max(start_index, 0), len(lines)):
+        if lines[index].strip().startswith("› "):
+            return index
+    return None
+
+
+def _is_codex_transient_output(line: str) -> bool:
+    compact = _compact_prompt_text(line).lower()
+    if not compact:
+        return True
+    if "esc to interrupt" in compact:
+        return True
+    return compact.startswith(("working ", "working("))
+
+
+def _is_codex_output_continuation(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith(("› ", "• ", "⚠ ", "╭", "╰", "│", "└")):
+        return False
+    return not _is_codex_status_line(stripped)
+
+
+def _extract_codex_completion_summary(capture: str, prompt: str) -> str:
+    lines = capture.splitlines()
+    prompt_block = _find_codex_prompt_block(lines, prompt)
+    if prompt_block is None:
+        return ""
+    _prompt_start, prompt_end = prompt_block
+    next_prompt_index = _find_next_codex_prompt(lines, prompt_end + 1)
+    if next_prompt_index is None:
+        return ""
+    summaries: list[str] = []
+    current_output: list[str] = []
+    for raw_line in lines[prompt_end + 1 : next_prompt_index]:
+        stripped = raw_line.strip()
+        if not stripped:
+            if current_output:
+                summary = _compact_prompt_text(" ".join(current_output))
+                if summary and not _is_codex_transient_output(summary):
+                    summaries.append(summary)
+                current_output = []
+            continue
+        if stripped.startswith("• "):
+            if current_output:
+                summary = _compact_prompt_text(" ".join(current_output))
+                if summary and not _is_codex_transient_output(summary):
+                    summaries.append(summary)
+            current_output = [stripped[2:].strip()]
+            continue
+        if current_output and _is_codex_output_continuation(raw_line):
+            current_output.append(stripped)
+            continue
+        if current_output:
+            summary = _compact_prompt_text(" ".join(current_output))
+            if summary and not _is_codex_transient_output(summary):
+                summaries.append(summary)
+            current_output = []
+    if current_output:
+        summary = _compact_prompt_text(" ".join(current_output))
+        if summary and not _is_codex_transient_output(summary):
+            summaries.append(summary)
+    return summaries[-1] if summaries else ""
 
 
 def validate_toml_document(content: str, *, label: str) -> None:
@@ -305,6 +425,16 @@ class CodexAgent(AgentPlugin):
         has_brand = "openai codex" in lowered or "\ncodex" in lowered or " codex" in lowered
         has_context = str(cwd) in capture or any(hint.lower() in lowered for hint in READY_SURFACE_HINTS)
         return has_brand and has_context
+
+    def submit_prompt(self, session: str, prompt: str, *, bridge: BridgeIO) -> None:
+        if prompt:
+            bridge.type(session, prompt)
+            # Codex can drop an immediate Enter and leave the prompt staged but unsubmitted.
+            time.sleep(codex_submit_settle_seconds(prompt))
+        bridge.keys(session, ["Enter"])
+
+    def extract_completion_summary(self, capture: str, prompt: str) -> str:
+        return _extract_codex_completion_summary(capture, prompt)
 
     def cleanup_runtime(self, runtime: AgentRuntime) -> None:
         if runtime.home:

@@ -34,13 +34,15 @@ TMUX_SESSION = "orche"
 LEGACY_TMUX_SESSION = "orche-smux"
 DEFAULT_CAPTURE_LINES = 200
 STARTUP_TIMEOUT = 90.0
-WATCHDOG_CAPTURE_LINES = 80
+WATCHDOG_CAPTURE_LINES = DEFAULT_CAPTURE_LINES
 NOTIFY_TAIL_LINES = 20
 WATCHDOG_POLL_INTERVAL = 3.0
 WATCHDOG_STALLED_AFTER = 45.0
 WATCHDOG_NEEDS_INPUT_AFTER = 120.0
 WATCHDOG_REMINDER_AFTER = 600.0
 WATCHDOG_ACTIVE_CPU_THRESHOLD = 5.0
+LATEST_TURN_SUMMARY_RETRY_SECONDS = 5.0
+LATEST_TURN_SUMMARY_RETRY_INTERVAL = 0.25
 LAUNCH_ERROR_PREFIX = "orche launch error:"
 CONFIG_COMMENT = (
     "orche runtime config. session is the active orche agent session label; "
@@ -130,6 +132,14 @@ def extract_summary_candidate(text: str, *, prompt: str = "") -> str:
             continue
         lines.append(line)
     return lines[-1] if lines else ""
+
+
+def _is_prompt_fragment(candidate: str, prompt: str) -> bool:
+    candidate_inline = compact_text(candidate)
+    prompt_inline = compact_text(prompt)
+    if not candidate_inline or not prompt_inline:
+        return False
+    return len(candidate_inline) >= 8 and candidate_inline in prompt_inline
 
 
 def log_event(event: str, **fields: Any) -> None:
@@ -1717,8 +1727,9 @@ def _watchdog_summary_for_event(
 ) -> str:
     before_capture = str(pending_turn.get("before_capture") or "")
     delta = turn_delta(before_capture, capture) if capture else ""
-    candidate = extract_summary_candidate(delta, prompt=str(pending_turn.get("prompt") or ""))
-    if candidate:
+    prompt = str(pending_turn.get("prompt") or "")
+    candidate = extract_summary_candidate(delta, prompt=prompt)
+    if candidate and not _is_prompt_fragment(candidate, prompt):
         return candidate
     if event == "failed":
         return "Agent process exited before completion notify was delivered"
@@ -1733,6 +1744,25 @@ def _watchdog_event_status(event: str) -> str:
     if event in {"stalled", "needs-input"}:
         return "warning"
     return "success"
+
+
+def _pending_turn_completion_summary(
+    plugin: AgentPlugin,
+    *,
+    pending_turn: Mapping[str, Any],
+    capture: str,
+) -> str:
+    before_capture = str(pending_turn.get("before_capture") or "")
+    prompt = str(pending_turn.get("prompt") or "")
+    delta = turn_delta(before_capture, capture) if capture else ""
+    if not delta:
+        return ""
+    summary = plugin.extract_completion_summary(delta, prompt)
+    if summary:
+        return summary
+    if not plugin.capture_has_completion_surface(delta, prompt):
+        return ""
+    return extract_summary_candidate(delta, prompt=prompt)
 
 
 def _latest_notification_at(pending_turn: Mapping[str, Any]) -> float:
@@ -1858,6 +1888,7 @@ def run_session_watchdog(
         pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
         if not pending_turn or str(pending_turn.get("turn_id") or "") != turn_id:
             return "completed"
+        plugin = get_agent(str(meta.get("agent") or "codex"))
         watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
         if bool(watchdog.get("stop_requested")):
             update_watchdog_metadata(
@@ -1875,6 +1906,22 @@ def run_session_watchdog(
         )
         current_cursor = (str(sample.get("cursor_x") or ""), str(sample.get("cursor_y") or ""))
         progress_detected = observable_progress_detected(previous_signature, previous_cursor, sample)
+        completion_summary = _pending_turn_completion_summary(
+            plugin,
+            pending_turn=pending_turn,
+            capture=str(sample.get("capture") or ""),
+        )
+        if completion_summary:
+            emit_internal_notify(
+                session,
+                event="completed",
+                summary=completion_summary,
+                status="success",
+                turn_id=turn_id,
+                cwd=str(meta.get("cwd") or ""),
+                source="watchdog",
+            )
+            return "completed"
         last_progress_at = float(watchdog.get("last_progress_at") or pending_turn.get("submitted_at") or now)
         idle_samples = int(watchdog.get("idle_samples") or 0)
         state = "running"
@@ -2146,11 +2193,22 @@ def latest_turn_summary(session: str) -> str:
     meta = load_meta(session)
     pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
     if pending_turn:
-        pane_id = str((bridge_resolve(session) or pending_turn.get("pane_id") or meta.get("pane_id") or "")).strip()
-        capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES) if pane_id else ""
-        before_capture = str(pending_turn.get("before_capture") or "")
-        delta = turn_delta(before_capture, capture) if capture else ""
-        summary = extract_summary_candidate(delta, prompt=str(pending_turn.get("prompt") or ""))
+        agent = str(meta.get("agent") or "codex")
+        plugin = get_agent(agent)
+        prompt = str(pending_turn.get("prompt") or "")
+        deadline = time.monotonic() + LATEST_TURN_SUMMARY_RETRY_SECONDS
+        summary = ""
+        while True:
+            pane_id = str((bridge_resolve(session) or pending_turn.get("pane_id") or meta.get("pane_id") or "")).strip()
+            capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES) if pane_id else ""
+            before_capture = str(pending_turn.get("before_capture") or "")
+            delta = turn_delta(before_capture, capture) if capture else ""
+            summary = plugin.extract_completion_summary(delta, prompt)
+            if not summary and plugin.capture_has_completion_surface(delta, prompt):
+                summary = extract_summary_candidate(delta, prompt=prompt)
+            if summary or time.monotonic() >= deadline:
+                break
+            time.sleep(LATEST_TURN_SUMMARY_RETRY_INTERVAL)
         if summary:
             completed = dict(pending_turn)
             completed["summary"] = summary

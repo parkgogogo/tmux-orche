@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 from .config import NotifyConfig
@@ -206,6 +208,58 @@ def _assistant_message(payload: Mapping[str, Any]) -> str:
     )
 
 
+def _payload_transcript_path(payload: Mapping[str, Any]) -> str:
+    return _first_string(
+        payload.get("transcript_path"),
+        payload.get("transcriptPath"),
+        _payload_value(payload, ("payload", "transcript_path")),
+        _payload_value(payload, ("payload", "transcriptPath")),
+    )
+
+
+def _assistant_message_from_transcript(payload: Mapping[str, Any], *, wait_seconds: float = 0.0) -> str:
+    transcript_path = _payload_transcript_path(payload)
+    if not transcript_path:
+        return ""
+    path = Path(transcript_path).expanduser()
+    if not path.exists():
+        return ""
+    deadline = time.monotonic() + max(wait_seconds, 0.0)
+    while True:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return ""
+        for line in reversed(lines):
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                entry = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, Mapping) or entry.get("type") != "assistant":
+                continue
+            message = entry.get("message")
+            if not isinstance(message, Mapping):
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for item in reversed(content):
+                if not isinstance(item, Mapping):
+                    continue
+                if str(item.get("type") or "") != "text":
+                    continue
+                text = _first_string(item.get("text"))
+                if text:
+                    return text
+        if time.monotonic() >= deadline:
+            return ""
+        time.sleep(0.25)
+    return ""
+
+
 def _payload_session(payload: Mapping[str, Any]) -> str:
     return _first_string(
         payload.get("session"),
@@ -293,8 +347,14 @@ def build_message_from_payload(
     session = _first_string(explicit_session, _payload_session(payload), runtime_config.get("session"))
     cwd = _first_string(_payload_cwd(payload), runtime_config.get("cwd"))
     assistant_message = _assistant_message(payload)
-    if not assistant_message and session:
-        assistant_message = summary_loader(session)
+    loaded_summary = summary_loader(session) if session else ""
+    transcript_summary = (
+        _assistant_message_from_transcript(payload, wait_seconds=3.0) if event_name == "completed" else ""
+    )
+    if event_name == "completed":
+        assistant_message = _first_string(transcript_summary, loaded_summary, assistant_message)
+    elif not assistant_message and loaded_summary:
+        assistant_message = loaded_summary
     assistant_summary = summarize_assistant_message(
         assistant_message,
         max_chars=notify_config.summary_max_chars,

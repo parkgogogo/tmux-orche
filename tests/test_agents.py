@@ -5,6 +5,23 @@ from pathlib import Path
 
 import backend
 import pytest
+from agents.codex import (
+    CODEX_SUBMIT_SETTLE_MAX_SECONDS,
+    CODEX_SUBMIT_SETTLE_MIN_SECONDS,
+    CodexAgent,
+    codex_submit_settle_seconds,
+)
+
+
+class FakeBridge:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, object]] = []
+
+    def type(self, session: str, text: str) -> None:
+        self.calls.append(("type", session, text))
+
+    def keys(self, session: str, keys: list[str]) -> None:
+        self.calls.append(("keys", session, list(keys)))
 
 
 def test_supported_agents_include_codex_and_claude():
@@ -112,3 +129,37 @@ def test_wait_for_agent_process_start_surfaces_explicit_launch_error(monkeypatch
 
     with pytest.raises(backend.OrcheError, match="Codex CLI not found in PATH"):
         backend.wait_for_agent_process_start(plugin, "%1", timeout=0.1)
+
+
+def test_codex_submit_prompt_waits_before_enter(monkeypatch):
+    plugin = CodexAgent()
+    bridge = FakeBridge()
+    sleeps: list[float] = []
+
+    monkeypatch.setattr("agents.codex.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    plugin.submit_prompt("demo-codex", "Reply with exactly DEBUG_TOKEN", bridge=bridge)
+
+    assert bridge.calls == [
+        ("type", "demo-codex", "Reply with exactly DEBUG_TOKEN"),
+        ("keys", "demo-codex", ["Enter"]),
+    ]
+    assert sleeps == [codex_submit_settle_seconds("Reply with exactly DEBUG_TOKEN")]
+
+
+def test_codex_submit_prompt_skips_delay_for_empty_prompt(monkeypatch):
+    plugin = CodexAgent()
+    bridge = FakeBridge()
+    sleeps: list[float] = []
+
+    monkeypatch.setattr("agents.codex.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    plugin.submit_prompt("demo-codex", "", bridge=bridge)
+
+    assert bridge.calls == [("keys", "demo-codex", ["Enter"])]
+    assert sleeps == []
+
+
+def test_codex_submit_prompt_delay_scales_with_prompt_length():
+    assert codex_submit_settle_seconds("short") == CODEX_SUBMIT_SETTLE_MIN_SECONDS
+    assert codex_submit_settle_seconds("x" * 200) == CODEX_SUBMIT_SETTLE_MAX_SECONDS

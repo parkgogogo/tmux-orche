@@ -8,29 +8,6 @@ import pytest
 import backend
 
 
-def test_deliver_notify_to_session_types_and_submits(monkeypatch):
-    actions = []
-
-    monkeypatch.setattr(backend, "bridge_resolve", lambda session: "%42" if session == "target-session" else None)
-    monkeypatch.setattr(backend, "bridge_type", lambda session, text: actions.append(("type", session, text)))
-    monkeypatch.setattr(backend, "bridge_keys", lambda session, keys: actions.append(("keys", session, list(keys))))
-
-    pane_id = backend.deliver_notify_to_session("target-session", "hello")
-
-    assert pane_id == "%42"
-    assert actions == [
-        ("type", "target-session", "hello"),
-        ("keys", "target-session", ["Enter"]),
-    ]
-
-
-def test_deliver_notify_to_session_requires_existing_target(monkeypatch):
-    monkeypatch.setattr(backend, "bridge_resolve", lambda session: None)
-
-    with pytest.raises(backend.OrcheError, match="notify target session not found: missing-session"):
-        backend.deliver_notify_to_session("missing-session", "hello")
-
-
 def test_deliver_notify_to_session_serializes_same_target_session(xdg_runtime, monkeypatch):
     sequence = []
     start_barrier = threading.Barrier(3)

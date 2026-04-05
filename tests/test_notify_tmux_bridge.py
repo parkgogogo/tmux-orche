@@ -86,6 +86,40 @@ def test_tmux_bridge_notifier_appends_recent_output(monkeypatch):
     ]
 
 
+def test_tmux_bridge_notifier_renders_single_line_prompt_for_claude_target(monkeypatch):
+    captured = []
+
+    monkeypatch.setattr(
+        "notify.tmux_bridge.load_meta",
+        lambda session: {"agent": "claude"} if session == "target-session" else {},
+    )
+    monkeypatch.setattr(
+        "notify.tmux_bridge.deliver_notify_to_session",
+        lambda session, prompt: captured.append((session, prompt)) or "%42",
+    )
+
+    notifier = TmuxBridgeNotifier(NotifyConfig())
+
+    notifier.send(
+        NotifyEvent(
+            event="completed",
+            summary="review source session output",
+            session="source-session",
+            cwd="/tmp/repo",
+            status="success",
+            metadata={"tail_text": "line1\nline2"},
+        ),
+        ResolvedRoute(provider="tmux-bridge", target="target-session"),
+    )
+
+    assert captured == [
+        (
+            "target-session",
+            "orche notify | source=source-session | event=completed | status=success | summary=review source session output",
+        )
+    ]
+
+
 def test_tmux_bridge_notifier_requires_target_session():
     notifier = TmuxBridgeNotifier(NotifyConfig())
 

@@ -29,6 +29,7 @@ from backend import (
     cancel_session,
     claim_turn_notification,
     close_session,
+    complete_pending_turn,
     current_session_id,
     default_session_name,
     ensure_native_session,
@@ -720,6 +721,12 @@ def notify_internal_command(
                 notify_event=event.event,
             )
             return
+        if event.event == "completed":
+            complete_pending_turn(
+                event.session,
+                summary=event.summary,
+                turn_id=str(event.metadata.get("turn_id") or ""),
+            )
         service = NotificationService()
         results = dispatch_event(
             event,

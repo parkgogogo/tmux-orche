@@ -185,6 +185,14 @@ def _event_name(payload: Mapping[str, Any]) -> str:
     return EVENT_ALIASES.get(raw, raw)
 
 
+def _is_stop_hook_payload(payload: Mapping[str, Any]) -> bool:
+    raw = _first_string(
+        payload.get("hook_event_name"),
+        _payload_value(payload, ("payload", "hook_event_name")),
+    ).lower()
+    return EVENT_ALIASES.get(raw, raw) == "completed" and raw in {"stop", "subagentstop"}
+
+
 def _assistant_message(payload: Mapping[str, Any]) -> str:
     return _first_string(
         payload.get("last_agent_message"),
@@ -360,13 +368,21 @@ def build_message_from_payload(
     session = _first_string(explicit_session, _payload_session(payload), runtime_config.get("session"))
     cwd = _first_string(_payload_cwd(payload), runtime_config.get("cwd"))
     assistant_message = _assistant_message(payload)
-    loaded_summary = summary_loader(session) if session else ""
+    loaded_summary = ""
     transcript_summary = (
         _assistant_message_from_transcript(payload, wait_seconds=3.0) if event_name == "completed" else ""
     )
     if event_name == "completed":
-        assistant_message = _first_string(transcript_summary, loaded_summary, assistant_message)
-    elif not assistant_message and loaded_summary:
+        prefer_loaded_summary = _is_stop_hook_payload(payload)
+        if not transcript_summary and session and (prefer_loaded_summary or not assistant_message):
+            loaded_summary = summary_loader(session)
+        if prefer_loaded_summary:
+            assistant_message = _first_string(transcript_summary, loaded_summary, assistant_message)
+        else:
+            assistant_message = _first_string(transcript_summary, assistant_message, loaded_summary)
+    elif session:
+        loaded_summary = summary_loader(session)
+    if not assistant_message and loaded_summary:
         assistant_message = loaded_summary
     assistant_summary = summarize_assistant_message(
         assistant_message,

@@ -1849,6 +1849,37 @@ def stop_session_watchdog(session: str) -> int:
     return pid
 
 
+def complete_pending_turn(
+    session: str,
+    *,
+    summary: str = "",
+    turn_id: str = "",
+    completed_at: float | None = None,
+) -> Dict[str, Any]:
+    finished_at = completed_at if completed_at is not None else time.time()
+    with session_lock(session):
+        meta = load_meta(session)
+        pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
+        if not pending_turn:
+            return {}
+        pending_turn_id = str(pending_turn.get("turn_id") or "")
+        if turn_id and pending_turn_id and pending_turn_id != str(turn_id):
+            return {}
+        watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
+        pid = int(watchdog.get("pid") or 0) if str(watchdog.get("pid") or "").isdigit() else 0
+        completed = dict(pending_turn)
+        if summary:
+            completed["summary"] = summary
+        completed["completed_at"] = finished_at
+        meta["last_completed_turn"] = completed
+        meta.pop("pending_turn", None)
+        save_meta(session, meta)
+    if pid > 0 and process_is_alive(pid):
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+    return completed
+
+
 def session_watch_status(session: str) -> Dict[str, Any]:
     meta = load_meta(session)
     pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else {}
@@ -2210,12 +2241,7 @@ def latest_turn_summary(session: str) -> str:
                 break
             time.sleep(LATEST_TURN_SUMMARY_RETRY_INTERVAL)
         if summary:
-            completed = dict(pending_turn)
-            completed["summary"] = summary
-            completed["completed_at"] = time.time()
-            meta["last_completed_turn"] = completed
-            meta.pop("pending_turn", None)
-            save_meta(session, meta)
+            complete_pending_turn(session, summary=summary)
             return summary
         save_meta(session, meta)
         return ""

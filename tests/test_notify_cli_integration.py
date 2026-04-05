@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import signal
+
 from typer.testing import CliRunner
 
 from cli import app
@@ -254,3 +256,62 @@ def test_notify_hidden_command_deduplicates_same_turn_event(xdg_runtime, monkeyp
     assert second.exit_code == 0
     assert len(fake_client.requests) == 1
     assert "notify skipped: duplicate completed event" in second.output
+
+
+def test_notify_hidden_command_native_completed_finalizes_pending_turn_and_stops_watchdog(xdg_runtime, monkeypatch):
+    fake_client = FakeHTTPClient()
+    monkeypatch.setattr("notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
+    write_runtime_config(
+        xdg_runtime["config_path"],
+        {
+            "notify_enabled": True,
+            "discord_bot_token": "bot-token",
+            "session": "repo-codex-main",
+            "cwd": "/tmp/repo",
+        },
+    )
+
+    from backend import save_meta, load_meta
+
+    save_meta(
+        "repo-codex-main",
+        {
+            "session": "repo-codex-main",
+            "cwd": "/tmp/repo",
+            "agent": "codex",
+            "pane_id": "%1",
+            "notify_binding": {
+                "provider": "discord",
+                "target": "1111111111",
+                "session": "agent:main:discord:channel:1111111111",
+            },
+            "pending_turn": {
+                "turn_id": "turn-1",
+                "prompt": "hello",
+                "submitted_at": 1.0,
+                "pane_id": "%1",
+                "notifications": {},
+                "watchdog": {
+                    "pid": 4242,
+                },
+            },
+        },
+    )
+
+    killed = []
+    monkeypatch.setattr("backend.process_is_alive", lambda pid: pid == 4242)
+    monkeypatch.setattr("backend.os.kill", lambda pid, sig: killed.append((pid, sig)))
+
+    result = CliRunner().invoke(
+        app,
+        ["notify-internal", "--session", "repo-codex-main"],
+        input='{"event":"turn-complete","summary":"Done"}',
+    )
+
+    assert result.exit_code == 0
+    assert "notify ok: provider=discord detail=200" in result.output
+    assert killed == [(4242, signal.SIGTERM)]
+    meta = load_meta("repo-codex-main")
+    assert "pending_turn" not in meta
+    assert meta["last_completed_turn"]["summary"] == "Done"
+    assert "completed" in meta["last_completed_turn"]["notifications"]

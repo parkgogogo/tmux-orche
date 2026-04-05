@@ -263,6 +263,21 @@ def test_build_message_from_payload_prefers_loaded_completed_summary_over_hook_p
     assert message.summary == "CLAUDE_FINAL_TOKEN"
 
 
+def test_build_message_from_payload_completed_event_skips_summary_loader_when_native_message_exists():
+    calls: list[str] = []
+
+    message = build_message_from_payload(
+        '{"type":"agent-turn-complete","thread-id":"thread-1","turn-id":"turn-1","cwd":"/repo","last-assistant-message":"Done"}',
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={},
+        summary_loader=lambda session: calls.append(session) or "LOADER_TOKEN",
+    )
+
+    assert message is not None
+    assert message.summary == "Done"
+    assert calls == []
+
+
 def test_build_message_from_payload_prefers_transcript_text_for_completed_event(tmp_path):
     transcript_path = tmp_path / "claude.jsonl"
     transcript_path.write_text(
@@ -437,6 +452,22 @@ def test_build_message_from_payload_uses_summary_loader_for_non_completed_events
 
     assert message is not None
     assert message.summary == "Loaded summary"
+
+
+def test_build_message_from_payload_skips_summary_loader_for_non_completed_events_without_session():
+    calls: list[str] = []
+
+    message = build_message_from_payload(
+        '{"event":"failed","summary":"   "}',
+        notify_config=NotifyConfig(discord=DiscordNotifyConfig(mention_user_id="")),
+        runtime_config={},
+        summary_loader=lambda session: calls.append(session) or "Loaded summary",
+        status="failure",
+    )
+
+    assert message is not None
+    assert message.summary == "Agent turn failed"
+    assert calls == []
 
 
 def test_build_message_from_payload_supports_codex_hyphenated_notify_fields():

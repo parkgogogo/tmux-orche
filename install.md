@@ -104,7 +104,7 @@ By default the script installs `orche` to:
 Optional environment variables:
 
 ```bash
-ORCHE_INSTALL_VERSION=v0.4.33
+ORCHE_INSTALL_VERSION=v0.4.34
 ORCHE_INSTALL_PREFIX="$HOME/bin"
 ```
 
@@ -112,7 +112,7 @@ Examples:
 
 ```bash
 curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | ORCHE_INSTALL_PREFIX="$HOME/bin" sh
-curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | ORCHE_INSTALL_VERSION=v0.4.33 sh
+curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | ORCHE_INSTALL_VERSION=v0.4.34 sh
 ```
 
 ### Option B: `pip`

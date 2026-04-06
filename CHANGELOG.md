@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.28 - 2026-04-06
+
+- Fix the managed `--notify` launch regression introduced by the inline tmux worker changes so OpenClaw and other managed-session flows no longer crash with an unbound `host_pane_id`.
+- Add regression coverage to keep managed notify launches stable across the inline-pane and dedicated-session paths.
+
 ## v0.4.27 - 2026-04-06
 
 - Republish the inline tmux worker pane and explicit CLI success-output changes with a corrected semantic version tag after the previous tag pointed at the wrong commit.

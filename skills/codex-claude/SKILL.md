@@ -17,12 +17,49 @@ Do not use this skill when OpenClaw is the supervisor and the return path is Dis
 
 - Do not run delegated Codex or Claude workers in sandboxed or approval-gated mode. `orche` launches Codex with `--dangerously-bypass-approvals-and-sandbox` and Claude with `--dangerously-skip-permissions`; your workflow should assume the worker is unsandboxed.
 - Treat `notify` as the return path. If the worker must report back, open it with explicit `--notify tmux:<target-session>`.
-- Treat `prompt` as fire-and-forget. After `orche prompt`, do not keep the current turn open just to watch the worker.
+- Treat `prompt` as fire-and-forget. After `orche prompt`, do not keep the current turn open just to watch the worker. If you have no independent work left, end the current turn immediately and wait for `notify` to trigger the next turn.
 - Never guess the tmux notify target. Resolve it with `orche whoami` first.
 - When you open a tmux-routed worker from inside the current supervisor session, prefer the visible inline tmux pane workflow over creating a separate detached tmux session.
 - Use managed sessions for delegated workers. A delegated worker that must report back is not a native session.
 - Create a session once, then reuse it through `prompt`, `status`, `read`, `attach`, `input`, `key`, `cancel`, or `close`. Do not call `open` again with the same explicit session name; that errors instead of reusing it.
 - Use `attach` only for human takeover or deep debugging, not as the default inspection path.
+
+## Fire-and-Forget Means Turn Handoff
+
+`fire-and-forget` does not mean "keep doing your own work while secretly tracking the worker."
+
+It means:
+
+1. send the task with `orche prompt`
+2. if you have unrelated work, do that
+3. if you do not have unrelated work, end the current turn now
+4. let the worker's `notify` message become the input that starts the next turn
+
+Do not keep the supervisor turn alive only because you want to see whether the worker is about to finish.
+
+## Reviewer Delegation Must Have A Stop Condition
+
+Reviewer workers are the easiest place for Codex or Claude to get sticky. A vague "review this carefully" prompt often causes the worker to keep expanding scope, rerunning checks, and refusing to end the turn.
+
+When delegating a reviewer, put the stop condition in the prompt itself:
+
+- ask for findings first, ordered by severity
+- explicitly allow `no findings`
+- explicitly say that once the review result is ready, the worker must stop and end the turn
+- do not ask the reviewer to keep monitoring or to continue investigating indefinitely
+
+Preferred reviewer prompt shape:
+
+```bash
+orche prompt repo-reviewer "Review the current changes for bugs, regressions, and missing tests. Report findings first with file references. If there are no material findings, say 'no findings'. Once your review result is ready, stop immediately and end the turn."
+```
+
+Avoid prompts like:
+
+- "review this and keep digging until you're sure"
+- "watch this worker and tell me if anything changes"
+- "continue investigating and keep me posted"
+- "do a very deep review and run anything else you think might help" when a bounded review is what you actually want
 
 ## Session Awareness First
 
@@ -72,6 +109,7 @@ Default behavior after `prompt`:
 - do not keep the turn alive just to monitor output
 - if you have no independent work left, end the current turn immediately
 - when the worker reports back through `notify`, that notify becomes the next input to the supervisor session
+- if the worker is acting as a reviewer, prefer a bounded prompt that tells it exactly when to stop
 
 Later, inspect only if needed:
 
@@ -159,6 +197,7 @@ Avoid these:
 - opening a worker without `--notify` when the result must return to the supervisor session
 - polling continuously after `prompt`
 - keeping the current turn open only to watch the worker instead of ending it and waiting for notify
+- using open-ended reviewer prompts that encourage the worker to keep digging instead of returning a result and ending the turn
 - attaching to every worker when `status` or `read` would be enough
 - using `input` for normal task delegation
 - combining raw agent args with `--notify`

@@ -44,6 +44,7 @@ WATCHDOG_REMINDER_AFTER = 600.0
 WATCHDOG_ACTIVE_CPU_THRESHOLD = 5.0
 LATEST_TURN_SUMMARY_RETRY_SECONDS = 5.0
 LATEST_TURN_SUMMARY_RETRY_INTERVAL = 0.25
+WATCHDOG_NOTIFY_BUFFER = 10.0
 LAUNCH_ERROR_PREFIX = "orche launch error:"
 CONFIG_COMMENT = (
     "orche runtime config. session is the active orche agent session label; "
@@ -1961,6 +1962,19 @@ def _latest_notification_at(pending_turn: Mapping[str, Any]) -> float:
     return latest
 
 
+def _watchdog_time_value(*values: Any, default: float) -> float:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return default
+
+
 def _watchdog_reminder_summary(session: str, state: str) -> str:
     normalized = str(state or "").strip().lower() or "stalled"
     if normalized == "needs-input":
@@ -1972,6 +1986,38 @@ def _watchdog_reminder_summary(session: str, state: str) -> str:
         f"{situation} To reconnect with it, run `orche status {session}` and "
         f"`orche read {session} --lines 120`."
     )
+
+
+def _watchdog_pending_event_ready(
+    watchdog: Mapping[str, Any],
+    *,
+    event: str,
+    summary: str,
+    now: float,
+    notify_buffer: float,
+) -> tuple[bool, dict[str, Any]]:
+    if notify_buffer <= 0:
+        return True, {
+            "pending_event": "",
+            "pending_event_at": 0.0,
+            "pending_event_summary": "",
+        }
+    pending_event = str(watchdog.get("pending_event") or "")
+    pending_summary = str(watchdog.get("pending_event_summary") or "")
+    pending_at = float(watchdog.get("pending_event_at") or 0.0)
+    if pending_event != event or pending_summary != summary or pending_at <= 0.0:
+        return False, {
+            "pending_event": event,
+            "pending_event_at": now,
+            "pending_event_summary": summary,
+        }
+    if now - pending_at < notify_buffer:
+        return False, {}
+    return True, {
+        "pending_event": "",
+        "pending_event_at": 0.0,
+        "pending_event_summary": "",
+    }
 
 
 def start_session_watchdog(session: str, *, turn_id: str = "") -> int:
@@ -1999,7 +2045,7 @@ def start_session_watchdog(session: str, *, turn_id: str = "") -> int:
             "pid": proc.pid,
             "state": "starting",
             "started_at": time.time(),
-            "last_progress_at": float(turn.get("submitted_at") or time.time()),
+            "last_progress_at": _watchdog_time_value(turn.get("submitted_at"), default=time.time()),
             "last_sample_at": 0.0,
             "idle_samples": 0,
             "stop_requested": False,
@@ -2101,6 +2147,7 @@ def run_session_watchdog(
     stalled_after: float = WATCHDOG_STALLED_AFTER,
     needs_input_after: float = WATCHDOG_NEEDS_INPUT_AFTER,
     reminder_after: float = WATCHDOG_REMINDER_AFTER,
+    notify_buffer: float = WATCHDOG_NOTIFY_BUFFER,
 ) -> str:
     while True:
         meta = load_meta(session)
@@ -2123,7 +2170,28 @@ def run_session_watchdog(
             pending_turn=pending_turn,
             capture=sample_capture,
         )
+        now = time.time()
         if completion_summary:
+            ready, pending_values = _watchdog_pending_event_ready(
+                watchdog,
+                event="completed",
+                summary=completion_summary,
+                now=now,
+                notify_buffer=notify_buffer,
+            )
+            if not ready:
+                update_watchdog_metadata(
+                    session,
+                    turn_id=turn_id,
+                    values={
+                        "state": "completion-pending",
+                        **pending_values,
+                    },
+                )
+                time.sleep(max(0.5, poll_interval))
+                continue
+            if pending_values:
+                update_watchdog_metadata(session, turn_id=turn_id, values=pending_values)
             emitted = emit_internal_notify(
                 session,
                 event="completed",
@@ -2147,11 +2215,10 @@ def run_session_watchdog(
                 values={
                     "state": "completed",
                     "last_event": "completed",
-                    "last_event_at": time.time(),
+                    "last_event_at": now,
                 },
             )
             return "completed"
-        now = time.time()
         previous_signature = str(watchdog.get("last_signature") or "")
         previous_cursor = (
             str(watchdog.get("last_cursor_x") or ""),
@@ -2159,7 +2226,11 @@ def run_session_watchdog(
         )
         current_cursor = (str(sample.get("cursor_x") or ""), str(sample.get("cursor_y") or ""))
         progress_detected = observable_progress_detected(previous_signature, previous_cursor, sample)
-        last_progress_at = float(watchdog.get("last_progress_at") or pending_turn.get("submitted_at") or now)
+        last_progress_at = _watchdog_time_value(
+            watchdog.get("last_progress_at"),
+            pending_turn.get("submitted_at"),
+            default=now,
+        )
         idle_samples = int(watchdog.get("idle_samples") or 0)
         state = "running"
         if progress_detected:
@@ -2174,6 +2245,29 @@ def run_session_watchdog(
                 state = "needs-input"
             elif idle_samples >= 2 and idle_seconds >= stalled_after:
                 state = "stalled"
+        reset_values: Dict[str, Any] = {}
+        if state == "running":
+            if (
+                watchdog.get("pending_event")
+                or watchdog.get("pending_event_at")
+                or watchdog.get("pending_event_summary")
+            ):
+                reset_values.update(
+                    {
+                        "pending_event": "",
+                        "pending_event_at": 0.0,
+                        "pending_event_summary": "",
+                    }
+                )
+            previous_event = str(watchdog.get("last_event") or "")
+            if previous_event in {"stalled", "needs-input", "failed"}:
+                release_turn_notification(session, previous_event, turn_id=turn_id)
+                reset_values.update(
+                    {
+                        "last_event": "",
+                        "last_event_at": 0.0,
+                    }
+                )
         update_watchdog_metadata(
             session,
             turn_id=turn_id,
@@ -2187,31 +2281,61 @@ def run_session_watchdog(
                 "last_sample_at": now,
                 "last_progress_at": last_progress_at,
                 "idle_samples": idle_samples,
+                **reset_values,
             },
         )
         if state in {"failed", "stalled", "needs-input"}:
             emitted = False
-            if str(watchdog.get("last_event") or "") != state:
-                summary = _watchdog_summary_for_event(
-                    state,
-                    pending_turn=pending_turn,
-                    capture=str(sample.get("capture") or ""),
-                )
-                emitted = emit_internal_notify(
-                    session,
+            last_event = str(watchdog.get("last_event") or "")
+            summary = _watchdog_summary_for_event(
+                state,
+                pending_turn=pending_turn,
+                capture=str(sample.get("capture") or ""),
+            )
+            if last_event == state:
+                if (
+                    watchdog.get("pending_event")
+                    or watchdog.get("pending_event_at")
+                    or watchdog.get("pending_event_summary")
+                ):
+                    update_watchdog_metadata(
+                        session,
+                        turn_id=turn_id,
+                        values={
+                            "pending_event": "",
+                            "pending_event_at": 0.0,
+                            "pending_event_summary": "",
+                        },
+                    )
+            else:
+                ready, pending_values = _watchdog_pending_event_ready(
+                    watchdog,
                     event=state,
                     summary=summary,
-                    status=_watchdog_event_status(state),
-                    turn_id=turn_id,
-                    cwd=str(meta.get("cwd") or ""),
-                    source="watchdog",
-                    tail_text=recent_capture_excerpt(str(sample.get("capture") or "")),
+                    now=now,
+                    notify_buffer=notify_buffer,
                 )
+                if not ready:
+                    if pending_values:
+                        update_watchdog_metadata(session, turn_id=turn_id, values=pending_values)
+                elif str(load_meta(session).get("pending_turn", {}).get("watchdog", {}).get("last_event") or "") != state:
+                    if pending_values:
+                        update_watchdog_metadata(session, turn_id=turn_id, values=pending_values)
+                    emitted = emit_internal_notify(
+                        session,
+                        event=state,
+                        summary=summary,
+                        status=_watchdog_event_status(state),
+                        turn_id=turn_id,
+                        cwd=str(meta.get("cwd") or ""),
+                        source="watchdog",
+                        tail_text=recent_capture_excerpt(str(sample.get("capture") or "")),
+                    )
             update_watchdog_metadata(
                 session,
                 turn_id=turn_id,
                 values={
-                    "last_event": state if emitted else str(watchdog.get("last_event") or ""),
+                    "last_event": state if emitted else last_event,
                     "last_event_at": now if emitted else float(watchdog.get("last_event_at") or 0.0),
                 },
             )

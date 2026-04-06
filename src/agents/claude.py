@@ -74,9 +74,12 @@ def _extract_claude_completion_summary(capture: str, prompt: str) -> str:
     if prompt_block is None:
         return ""
     _prompt_start, prompt_end = prompt_block
+    next_prompt_index = _find_next_claude_prompt(lines, prompt_end + 1)
+    if next_prompt_index is None:
+        return ""
     summaries: list[str] = []
     current_block: list[str] = []
-    for raw_line in lines[prompt_end + 1 :]:
+    for raw_line in lines[prompt_end + 1 : next_prompt_index]:
         stripped = raw_line.strip()
         if not stripped:
             if current_block:
@@ -101,6 +104,14 @@ def _extract_claude_completion_summary(capture: str, prompt: str) -> str:
         summaries.append(_compact_prompt_text(" ".join(current_block)))
     cleaned = [summary for summary in summaries if summary and not re.match(r"^⏵⏵\s+", summary)]
     return cleaned[-1] if cleaned else ""
+
+
+def _find_next_claude_prompt(lines: list[str], start_index: int) -> int | None:
+    for index in range(max(start_index, 0), len(lines)):
+        stripped = lines[index].strip()
+        if stripped == "❯" or stripped.startswith("❯ "):
+            return index
+    return None
 
 
 def default_claude_home_path(session: str) -> Path:

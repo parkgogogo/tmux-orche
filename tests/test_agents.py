@@ -141,6 +141,22 @@ def test_claude_agent_matches_node_frontend_process():
     assert plugin.matches_process("bash", ["node /opt/homebrew/bin/claude"])
 
 
+def test_claude_completion_summary_requires_returned_prompt():
+    plugin = backend.ClaudeAgent()
+    capture = (
+        "before prompt\n"
+        "❯ Implement the parser refactor.\n"
+        "\n"
+        "⏺ Updated parser.py and parser_test.py\n"
+        "\n"
+        "✻ Working…\n"
+    )
+
+    summary = plugin.extract_completion_summary(capture, "Implement the parser refactor.")
+
+    assert summary == ""
+
+
 def test_orche_shim_executes_repo_cli(xdg_runtime):
     shim = backend.ensure_orche_shim()
 
@@ -264,7 +280,7 @@ def test_run_session_watchdog_completes_turn_when_capture_shows_completion(xdg_r
     )
     monkeypatch.setattr(backend, "emit_internal_notify", lambda *args, **kwargs: emitted.append(kwargs) or False)
 
-    result = backend.run_session_watchdog(session, turn_id="turn-1", poll_interval=0.01)
+    result = backend.run_session_watchdog(session, turn_id="turn-1", poll_interval=0.01, notify_buffer=0.0)
     meta = backend.load_meta(session)
 
     assert result == "completed"

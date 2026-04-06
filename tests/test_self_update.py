@@ -26,6 +26,19 @@ def _write_release_archive(tmp_path: Path, *, version: str, target: str) -> Path
     return archive_path
 
 
+def _write_legacy_release_archive(tmp_path: Path, *, version: str, target: str) -> Path:
+    source_root = tmp_path / "legacy"
+    source_root.mkdir(parents=True, exist_ok=True)
+    executable = source_root / "orche"
+    executable.write_text("#!/bin/sh\necho legacy\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    archive_path = tmp_path / f"orche-{version}-{target}-legacy.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(executable, arcname="orche")
+    return archive_path
+
+
 def test_perform_self_update_requires_install_metadata(xdg_runtime):
     with pytest.raises(self_update.SelfUpdateError, match="install.sh"):
         self_update.perform_self_update()
@@ -104,3 +117,29 @@ def test_perform_self_update_noops_when_requested_version_is_already_active(xdg_
 
     assert result.updated is False
     assert result.version == "v0.4.35"
+
+
+def test_install_release_archive_supports_legacy_single_binary_layout(tmp_path):
+    archive_path = _write_legacy_release_archive(
+        tmp_path,
+        version="v0.4.36",
+        target="linux-x64",
+    )
+    prefix = tmp_path / "bin"
+    install_root = tmp_path / "releases"
+
+    result = self_update.install_release_archive(
+        archive_path=archive_path,
+        version="v0.4.36",
+        target="linux-x64",
+        repo=self_update.DEFAULT_RELEASE_REPO,
+        prefix=prefix,
+        install_root=install_root,
+    )
+
+    executable = install_root / "v0.4.36" / "linux-x64" / "orche"
+    assert result.updated is True
+    assert executable.exists()
+    assert executable.read_text(encoding="utf-8").startswith("#!/bin/sh")
+    assert (prefix / "orche").is_symlink()
+    assert (prefix / "orche").resolve() == executable

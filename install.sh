@@ -29,6 +29,23 @@ json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+resolve_payload() {
+  payload_root="$1"
+  if [ -x "${payload_root}/${BIN_NAME}/${BIN_NAME}" ]; then
+    printf '%s\n' "${payload_root}/${BIN_NAME}"
+    return
+  fi
+  if [ -f "${payload_root}/${BIN_NAME}" ]; then
+    legacy_dir="${payload_root}/.orche-legacy"
+    mkdir -p "${legacy_dir}"
+    cp "${payload_root}/${BIN_NAME}" "${legacy_dir}/${BIN_NAME}"
+    chmod 755 "${legacy_dir}/${BIN_NAME}"
+    printf '%s\n' "${legacy_dir}"
+    return
+  fi
+  fail "archive did not contain ${BIN_NAME} or ${BIN_NAME}/${BIN_NAME}"
+}
+
 resolve_version() {
   if [ -n "${ORCHE_INSTALL_VERSION:-}" ]; then
     printf '%s\n' "${ORCHE_INSTALL_VERSION}"
@@ -99,9 +116,9 @@ main() {
 
   mkdir -p "${PREFIX}"
   tar -xzf "${tmpdir}/${archive}" -C "${tmpdir}"
-  source_dir="${tmpdir}/${BIN_NAME}"
+  source_dir="$(resolve_payload "${tmpdir}")"
   executable_path="${source_dir}/${BIN_NAME}"
-  [ -x "${executable_path}" ] || fail "archive did not contain ${BIN_NAME}/${BIN_NAME}"
+  [ -x "${executable_path}" ] || fail "archive did not contain executable ${BIN_NAME}"
 
   release_dir="${INSTALL_ROOT}/${version}/${target}"
   rm -rf "${release_dir}"

@@ -140,6 +140,25 @@ def _replace_tree(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination, symlinks=True)
 
 
+def _resolve_extracted_source(temp_path: Path) -> Path:
+    source_root = temp_path / BIN_NAME
+    nested_executable = source_root / BIN_NAME
+    if nested_executable.exists():
+        return source_root
+
+    if source_root.is_file():
+        legacy_root = temp_path / ".orche-legacy"
+        legacy_root.mkdir()
+        legacy_executable = legacy_root / BIN_NAME
+        shutil.copy2(source_root, legacy_executable)
+        legacy_executable.chmod(0o755)
+        return legacy_root
+
+    raise SelfUpdateError(
+        f"Downloaded archive did not contain {BIN_NAME} or {BIN_NAME}/{BIN_NAME}"
+    )
+
+
 def _safe_extract_archive(archive: tarfile.TarFile, destination: Path) -> None:
     root = destination.resolve()
     for member in archive.getmembers():
@@ -163,12 +182,7 @@ def install_release_archive(
         with tarfile.open(archive_path, "r:gz") as archive:
             _safe_extract_archive(archive, temp_path)
 
-        source_root = temp_path / BIN_NAME
-        source_executable = source_root / BIN_NAME
-        if not source_executable.exists():
-            raise SelfUpdateError(
-                f"Downloaded archive did not contain {BIN_NAME}/{BIN_NAME}"
-            )
+        source_root = _resolve_extracted_source(temp_path)
 
         install_root = install_root.expanduser().resolve()
         prefix = prefix.expanduser().resolve()

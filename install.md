@@ -110,7 +110,7 @@ The binary runtime is unpacked under:
 Optional environment variables:
 
 ```bash
-ORCHE_INSTALL_VERSION=v0.4.36
+ORCHE_INSTALL_VERSION=v0.4.37
 ORCHE_INSTALL_PREFIX="$HOME/bin"
 ```
 
@@ -118,7 +118,7 @@ Examples:
 
 ```bash
 curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | ORCHE_INSTALL_PREFIX="$HOME/bin" sh
-curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | ORCHE_INSTALL_VERSION=v0.4.36 sh
+curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | ORCHE_INSTALL_VERSION=v0.4.37 sh
 ```
 
 To update a binary install later:

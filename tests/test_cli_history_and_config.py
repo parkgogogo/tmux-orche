@@ -153,6 +153,45 @@ def test_list_command_shows_sessions(xdg_runtime):
     assert "/repo/demo" in result.stdout
 
 
+def test_close_all_closes_every_session(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        cli,
+        "list_sessions",
+        lambda: [
+            {"session": "alpha", "cwd": "/repo/alpha", "agent": "codex"},
+            {"session": "beta", "cwd": "/repo/beta", "agent": "claude"},
+        ],
+    )
+
+    def fake_resolve_session_context(*, session: str, require_existing: bool = False, require_cwd_agent: bool = False):
+        return Path(f"/repo/{session}"), "codex" if session == "alpha" else "claude", {"session": session}
+
+    monkeypatch.setattr(cli, "resolve_session_context", fake_resolve_session_context)
+    monkeypatch.setattr(cli, "close_session", lambda session: f"%{1 if session == 'alpha' else 2}")
+    monkeypatch.setattr(
+        cli,
+        "append_action_history",
+        lambda session, cwd, agent, action, **fields: calls.append((session, str(fields.get("pane_id") or ""))),
+    )
+
+    result = runner.invoke(app, ["close", "--all"])
+
+    assert result.exit_code == 0
+    assert "alpha" in result.stdout
+    assert "beta" in result.stdout
+    assert calls == [("alpha", "%1"), ("beta", "%2")]
+
+
+def test_close_all_rejects_session_argument(xdg_runtime):
+    result = CliRunner().invoke(app, ["close", "demo-session", "--all"])
+
+    assert result.exit_code == 1
+    assert "close does not accept a session argument with --all" in result.output
+
+
 def test_ensure_tmux_session_creates_dedicated_session(xdg_runtime, monkeypatch, tmp_path):
     calls: list[tuple[str, ...]] = []
     created = {"value": False}

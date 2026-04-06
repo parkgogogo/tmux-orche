@@ -612,9 +612,37 @@ def cancel(
 
 @app.command("close")
 def close(
-    session: str = typer.Argument(..., help="Session name."),
+    session: Optional[str] = typer.Argument(None, help="Session name."),
+    all_sessions: bool = typer.Option(False, "--all", help="Close all sessions."),
 ) -> None:
     try:
+        if all_sessions:
+            if session:
+                raise OrcheError("close does not accept a session argument with --all")
+            sessions = [str(entry.get("session") or "").strip() for entry in list_sessions()]
+            sessions = [name for name in sessions if name]
+            if not sessions:
+                console.print("No sessions found")
+                return
+            closed: list[str] = []
+            failures: list[str] = []
+            for name in sessions:
+                try:
+                    cwd, agent, _meta = resolve_session_context(session=name)
+                    pane_id = close_session(name)
+                    if cwd is not None and agent is not None:
+                        append_action_history(name, cwd, agent, "close", pane_id=pane_id)
+                    closed.append(name)
+                except (OrcheError, subprocess.CalledProcessError) as exc:
+                    failures.append(f"{name}: {_format_error_detail(exc)}")
+            for name in closed:
+                console.print(name)
+            if failures:
+                raise OrcheError("Failed to close some sessions: " + "; ".join(failures))
+            return
+
+        if not session:
+            raise OrcheError("Session name is required unless you pass --all")
         cwd, agent, _meta = resolve_session_context(session=session)
         pane_id = close_session(session)
         if cwd is not None and agent is not None:

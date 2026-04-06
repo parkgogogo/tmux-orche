@@ -1418,9 +1418,6 @@ def ensure_agent_running(
     pane_id = wait_for_agent_process_start(plugin, pane_id)
     bridge_name_pane(pane_id, session)
     meta = load_meta(session)
-    tmux_mode = str(meta.get("tmux_mode") or tmux_mode or "dedicated-session").strip() or "dedicated-session"
-    host_pane_id = str(meta.get("host_pane_id") or host_pane_id or "").strip()
-    tmux_host_session = str(meta.get("tmux_host_session") or tmux_host_session or "").strip()
     meta.update(
         {
             "backend": BACKEND,

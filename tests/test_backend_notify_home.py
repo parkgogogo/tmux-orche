@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ def test_ensure_session_reuses_managed_codex_home_with_normalized_path(xdg_runti
 
     monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
     monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", linked_root)
-    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%1")
     monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%1")
 
     managed_home = backend.ensure_managed_codex_home("demo-session", cwd=tmp_path, discord_channel_id="123")
@@ -63,7 +64,7 @@ def test_ensure_session_stores_absolute_cwd_in_metadata(xdg_runtime, tmp_path, m
 
     monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
     monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
-    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%1")
     monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%1")
 
     relative_cwd = Path(".")
@@ -125,7 +126,7 @@ def test_ensure_session_rejects_rebinding_notify_binding(xdg_runtime, tmp_path, 
 
     monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
     monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
-    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%1")
     monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%1")
 
     backend.ensure_session("notify-bound", tmp_path, "codex", notify_to="discord", notify_target="123")
@@ -142,7 +143,7 @@ def test_ensure_session_requires_notify_binding(xdg_runtime, tmp_path, monkeypat
 
     monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
     monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
-    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%1")
     monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%1")
 
     with pytest.raises(backend.OrcheError, match="managed sessions require both notify_to and notify_target"):
@@ -157,7 +158,7 @@ def test_ensure_session_stores_tmux_bridge_notify_binding(xdg_runtime, tmp_path,
 
     monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
     monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
-    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent: "%1")
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%1")
     monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%1")
 
     backend.ensure_session(
@@ -173,6 +174,44 @@ def test_ensure_session_stores_tmux_bridge_notify_binding(xdg_runtime, tmp_path,
         "provider": "tmux-bridge",
         "target": "target-session",
     }
+
+
+def test_ensure_agent_running_does_not_reference_inline_locals_when_absent(xdg_runtime, tmp_path, monkeypatch):
+    plugin = backend.get_agent("codex")
+    backend.save_meta(
+        "managed-launch",
+        {
+            "session": "managed-launch",
+            "cwd": str(tmp_path),
+            "agent": "codex",
+            "pane_id": "%5",
+        },
+    )
+
+    monkeypatch.setattr(backend, "is_agent_running", lambda plugin, pane_id: False)
+    monkeypatch.setattr(backend, "get_pane_info", lambda pane_id: {"pane_dead": "0"} if pane_id == "%5" else None)
+    monkeypatch.setattr(backend, "wait_for_agent_process_start", lambda plugin, pane_id: pane_id)
+    monkeypatch.setattr(backend, "bridge_name_pane", lambda pane_id, session: None)
+    monkeypatch.setattr(plugin, "build_launch_command", lambda **kwargs: "exec codex")
+    monkeypatch.setattr(
+        backend,
+        "tmux",
+        lambda *args, **kwargs: subprocess.CompletedProcess(["tmux", *args], 0, "", ""),
+    )
+
+    pane_id = backend.ensure_agent_running(
+        plugin,
+        "managed-launch",
+        tmp_path,
+        "%5",
+        runtime=backend.AgentRuntime(label=plugin.runtime_label),
+    )
+
+    meta = backend.load_meta("managed-launch")
+
+    assert pane_id == "%5"
+    assert meta["pane_id"] == "%5"
+    assert meta["session"] == "managed-launch"
 
 
 def test_close_session_removes_managed_codex_home(xdg_runtime, tmp_path, monkeypatch):

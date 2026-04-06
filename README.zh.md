@@ -12,6 +12,14 @@
 
 完整安装说明：<https://github.com/parkgogogo/tmux-orche/raw/main/install.md>
 
+如果你想直接安装预编译二进制，不依赖本机 Python 环境：
+
+```bash
+curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | sh
+```
+
+当前提供的预编译目标：`darwin-arm64`、`darwin-x64`、`linux-x64`。
+
 从 PyPI 安装：
 
 ```bash

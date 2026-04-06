@@ -12,6 +12,14 @@ It is not just a wrapper around tmux panes. It gives your agent graph stable ses
 
 Full install guide: <https://github.com/parkgogogo/tmux-orche/raw/main/install.md>
 
+Install the latest prebuilt binary without Python:
+
+```bash
+curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | sh
+```
+
+Supported prebuilt targets: `darwin-arm64`, `darwin-x64`, `linux-x64`.
+
 Install from PyPI:
 
 ```bash

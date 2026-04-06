@@ -926,3 +926,7 @@ def main() -> int:
         _print_error(exc)
         return 1
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

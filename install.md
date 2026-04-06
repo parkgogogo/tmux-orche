@@ -15,9 +15,10 @@ This guide is organized for the shortest path to a working setup:
 
 - `tmux`
 - at least one supported agent CLI: `codex` or `claude`
-- Python `3.9+`
 
 You do **not** need to install `smux` or a separate `tmux-bridge` binary. The tmux notify path is built in.
+
+Python `3.9+` is required only for `pip`, `uv`, or source installs. It is **not** required when you install a prebuilt binary with `install.sh`.
 
 ### Check `tmux`
 
@@ -68,6 +69,8 @@ At least one of them must be available.
 
 ### Check Python
 
+Skip this section if you plan to use the prebuilt binary installer.
+
 ```bash
 python3 --version
 ```
@@ -78,7 +81,41 @@ If needed, install Python `3.9+` via your normal system package manager, Homebre
 
 Choose one installation path.
 
-### Option A: `pip`
+### Option A: prebuilt binary via `install.sh`
+
+This path does not require a preinstalled Python runtime.
+
+```bash
+curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | sh
+```
+
+Currently published prebuilt targets:
+
+- `darwin-arm64`
+- `darwin-x64`
+- `linux-x64`
+
+By default the script installs `orche` to:
+
+```bash
+~/.local/bin/orche
+```
+
+Optional environment variables:
+
+```bash
+ORCHE_INSTALL_VERSION=v0.4.33
+ORCHE_INSTALL_PREFIX="$HOME/bin"
+```
+
+Examples:
+
+```bash
+curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | ORCHE_INSTALL_PREFIX="$HOME/bin" sh
+curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | ORCHE_INSTALL_VERSION=v0.4.33 sh
+```
+
+### Option B: `pip`
 
 From PyPI:
 
@@ -92,7 +129,7 @@ From a local checkout:
 python3 -m pip install .
 ```
 
-### Option B: `uv`
+### Option C: `uv`
 
 As a global tool:
 
@@ -112,7 +149,7 @@ Into the current environment:
 uv pip install .
 ```
 
-### Option C: source checkout
+### Option D: source checkout
 
 ```bash
 git clone https://github.com/parkgogogo/orche
@@ -224,6 +261,13 @@ python3 -m site --user-base
 ```
 
 If you used `uv tool install`, make sure the uv tool bin directory is on `PATH`.
+
+If you used `install.sh`, make sure the install prefix is on `PATH`:
+
+```bash
+echo "$PATH"
+ls ~/.local/bin/orche
+```
 
 ### `tmux is not installed`
 

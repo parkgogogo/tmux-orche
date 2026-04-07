@@ -334,7 +334,9 @@ Notes:
 ```bash
 orche config list
 orche config get claude.command
+orche config get claude.home-path
 orche config set claude.command /opt/tools/claude-wrapper
+orche config set claude.home-path ~/custom/.claude
 orche config set claude.config-path ~/custom/claude.json
 orche config set discord.bot-token "$BOT_TOKEN"
 orche config set discord.mention-user-id 123456789012345678
@@ -371,6 +373,8 @@ Supported user config keys:
 
 - `claude.command`
   Override the Claude CLI command that `orche` launches. Default is `claude`.
+- `claude.home-path`
+  Override the Claude source home directory mirrored into managed runtimes. Default is `~/.claude`.
 - `claude.config-path`
   Override the Claude source config path used for trust sync. Default is `~/.claude.json`.
 - `discord.bot-token`
@@ -390,12 +394,18 @@ Notes:
 
 ### Claude custom config
 
-Use these when your Claude installation is wrapped or its source config is not in the default location.
+Use these when your Claude installation is wrapped or its source home/config is not in the default location.
 
 Set a custom Claude executable:
 
 ```bash
 orche config set claude.command /opt/tools/claude-wrapper
+```
+
+Set a custom Claude source home path:
+
+```bash
+orche config set claude.home-path ~/custom/.claude
 ```
 
 Set a custom Claude source config path for trust sync:
@@ -407,12 +417,14 @@ orche config set claude.config-path ~/custom/claude.json
 What each key changes:
 
 - `claude.command` changes the binary or wrapper command that `orche` executes when it launches Claude.
+- `claude.home-path` changes which Claude home directory `orche` mirrors into managed Claude runtimes.
 - `claude.config-path` changes which Claude config file `orche` reads when it syncs trust settings into a managed worker runtime.
 
 Typical cases:
 
 - your system command is not literally named `claude`
 - you use a wrapper script such as `/opt/tools/claude-wrapper`
+- your Claude home directory is not `~/.claude`
 - your Claude config lives somewhere other than `~/.claude.json`
 
 Example `config.json`:
@@ -420,14 +432,15 @@ Example `config.json`:
 ```json
 {
   "claude_command": "/opt/tools/claude-wrapper",
+  "claude_home_path": "/Users/you/custom/.claude",
   "claude_config_path": "/Users/you/custom/claude.json"
 }
 ```
 
 Notes:
 
-- `claude.config-path` affects trust sync for managed Claude sessions; it does not change the worker runtime home path itself.
-- after changing either key, new Claude sessions use the updated value immediately.
+- `claude.home-path` and `claude.config-path` affect the source Claude state that `orche` mirrors into managed Claude sessions.
+- after changing any of these keys, new Claude sessions use the updated value immediately.
 
 ## Prerequisites
 

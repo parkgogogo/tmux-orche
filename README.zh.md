@@ -310,7 +310,9 @@ orche open --cwd /repo --agent codex --name repo-worker --notify discord:1234567
 ```bash
 orche config list
 orche config get claude.command
+orche config get claude.home-path
 orche config set claude.command /opt/tools/claude-wrapper
+orche config set claude.home-path ~/custom/.claude
 orche config set claude.config-path ~/custom/claude.json
 orche config set discord.bot-token "$BOT_TOKEN"
 orche config set discord.mention-user-id 123456789012345678
@@ -347,6 +349,8 @@ $XDG_DATA_HOME/orche/
 
 - `claude.command`
   覆盖 `orche` 启动 Claude 时使用的命令，默认值是 `claude`。
+- `claude.home-path`
+  覆盖被镜像进 managed runtime 的 Claude source home 目录，默认值是 `~/.claude`。
 - `claude.config-path`
   覆盖 Claude trust sync 使用的 source config 路径，默认值是 `~/.claude.json`。
 - `discord.bot-token`
@@ -366,12 +370,18 @@ $XDG_DATA_HOME/orche/
 
 ### Claude 自定义配置
 
-如果你的 Claude 安装有二次包装，或者 source config 不在默认位置，就用这两个配置项。
+如果你的 Claude 安装有二次包装，或者 source home / config 不在默认位置，就用这三个配置项。
 
 设置自定义 Claude 可执行命令：
 
 ```bash
 orche config set claude.command /opt/tools/claude-wrapper
+```
+
+设置自定义 Claude source home 路径：
+
+```bash
+orche config set claude.home-path ~/custom/.claude
 ```
 
 设置自定义 Claude source config 路径：
@@ -384,6 +394,8 @@ orche config set claude.config-path ~/custom/claude.json
 
 - `claude.command`
   控制 `orche` 启动 Claude 时实际执行的命令，可以是原始二进制，也可以是 wrapper script。
+- `claude.home-path`
+  控制 `orche` 在 managed Claude runtime 中镜像哪一个 Claude home 目录。
 - `claude.config-path`
   控制 `orche` 在 managed Claude worker 做 trust sync 时读取哪一个 Claude 配置文件。
 
@@ -391,6 +403,7 @@ orche config set claude.config-path ~/custom/claude.json
 
 - 你机器上的命令名字不是字面量 `claude`
 - 你是通过 wrapper script 启动 Claude，例如 `/opt/tools/claude-wrapper`
+- 你的 Claude home 目录不在 `~/.claude`
 - 你的 Claude 配置文件不在 `~/.claude.json`
 
 `config.json` 示例：
@@ -398,14 +411,15 @@ orche config set claude.config-path ~/custom/claude.json
 ```json
 {
   "claude_command": "/opt/tools/claude-wrapper",
+  "claude_home_path": "/Users/you/custom/.claude",
   "claude_config_path": "/Users/you/custom/claude.json"
 }
 ```
 
 说明：
 
-- `claude.config-path` 只影响 managed Claude session 的 trust sync，不会改变 worker runtime home 本身的位置。
-- 修改这两个键后，新创建的 Claude session 会立即使用新的配置。
+- `claude.home-path` 和 `claude.config-path` 会一起决定 `orche` 向 managed Claude session 镜像哪一份 Claude source state。
+- 修改这几个键后，新创建的 Claude session 会立即使用新的配置。
 
 ## 前置条件
 

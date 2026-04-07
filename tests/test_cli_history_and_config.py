@@ -404,24 +404,31 @@ def test_config_supports_discord_mention_user_id(xdg_runtime):
     assert "123456" in list_result.stdout
 
 
-def test_config_supports_claude_command_and_config_path(xdg_runtime):
+def test_config_supports_claude_command_home_and_config_paths(xdg_runtime):
     runner = CliRunner()
 
     set_command = runner.invoke(app, ["config", "set", "claude.command", "/opt/bin/claude-wrapper"])
+    set_home_path = runner.invoke(app, ["config", "set", "claude.home-path", "~/custom/.claude"])
     set_config_path = runner.invoke(app, ["config", "set", "claude.config-path", "~/custom/claude.json"])
     get_command = runner.invoke(app, ["config", "get", "claude.command"])
+    get_home_path = runner.invoke(app, ["config", "get", "claude.home-path"])
     get_config_path = runner.invoke(app, ["config", "get", "claude.config-path"])
     list_result = runner.invoke(app, ["config", "list"])
 
     assert set_command.exit_code == 0
+    assert set_home_path.exit_code == 0
     assert set_config_path.exit_code == 0
     assert get_command.exit_code == 0
+    assert get_home_path.exit_code == 0
     assert get_config_path.exit_code == 0
     assert get_command.stdout.strip() == "/opt/bin/claude-wrapper"
+    assert get_home_path.stdout.strip() == "~/custom/.claude"
     assert get_config_path.stdout.strip() == "~/custom/claude.json"
     assert list_result.exit_code == 0
     assert "claude.command" in list_result.stdout
     assert "/opt/bin/claude-wrapper" in list_result.stdout
+    assert "claude.home-path" in list_result.stdout
+    assert "~/custom/.claude" in list_result.stdout
     assert "claude.config-path" in list_result.stdout
     assert "~/custom/claude.json" in list_result.stdout
 
@@ -433,16 +440,23 @@ def test_config_set_accepts_multi_token_claude_values(xdg_runtime):
         app,
         ["config", "set", "claude.command", "/opt/tools/happy-coder", "claude", "--happy-starting-mode", "remote"],
     )
+    set_home_path = runner.invoke(
+        app,
+        ["config", "set", "claude.home-path", "/tmp/Claude", "Home/runtime"],
+    )
     set_config_path = runner.invoke(
         app,
         ["config", "set", "claude.config-path", "/tmp/Claude", "Config/custom.json"],
     )
     get_command = runner.invoke(app, ["config", "get", "claude.command"])
+    get_home_path = runner.invoke(app, ["config", "get", "claude.home-path"])
     get_config_path = runner.invoke(app, ["config", "get", "claude.config-path"])
 
     assert set_command.exit_code == 0
+    assert set_home_path.exit_code == 0
     assert set_config_path.exit_code == 0
     assert get_command.stdout.strip() == "/opt/tools/happy-coder claude --happy-starting-mode remote"
+    assert get_home_path.stdout.strip() == "/tmp/Claude Home/runtime"
     assert get_config_path.stdout.strip() == "/tmp/Claude Config/custom.json"
 
 

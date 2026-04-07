@@ -54,10 +54,12 @@ CONFIG_COMMENT = (
 DEFAULT_CODEX_HOME_ROOT = codex_agent_module.DEFAULT_RUNTIME_HOME_ROOT
 DEFAULT_CODEX_SOURCE_HOME = codex_agent_module.DEFAULT_CODEX_SOURCE_HOME
 DEFAULT_CLAUDE_COMMAND = claude_agent_module.DEFAULT_CLAUDE_COMMAND
+DEFAULT_CLAUDE_SOURCE_HOME = claude_agent_module.DEFAULT_CLAUDE_SOURCE_HOME
 DEFAULT_CLAUDE_SOURCE_CONFIG_PATH = claude_agent_module.DEFAULT_CLAUDE_SOURCE_CONFIG_PATH
 SUPPORTED_NOTIFY_PROVIDERS = ("discord", "tmux-bridge")
 CONFIG_KEY_MAP = {
     "claude.command": "claude_command",
+    "claude.home-path": "claude_home_path",
     "claude.config-path": "claude_config_path",
     "discord.bot-token": "discord_bot_token",
     "discord.mention-user-id": "notify_mention_user_id",
@@ -873,6 +875,7 @@ def load_config() -> Dict[str, Any]:
     default = {
         "_comment": CONFIG_COMMENT,
         "claude_command": "",
+        "claude_home_path": "",
         "claude_config_path": "",
         "codex_turn_complete_channel_id": "",
         "discord_bot_token": "",
@@ -1142,6 +1145,12 @@ def get_agent(name: str) -> AgentPlugin:
     try:
         config = load_config()
         claude_agent_module.DEFAULT_CLAUDE_COMMAND = str(config.get("claude_command") or "").strip() or DEFAULT_CLAUDE_COMMAND
+        claude_home_path = str(config.get("claude_home_path") or "").strip()
+        claude_agent_module.DEFAULT_CLAUDE_SOURCE_HOME = (
+            Path(claude_home_path).expanduser()
+            if claude_home_path
+            else DEFAULT_CLAUDE_SOURCE_HOME
+        )
         claude_config_path = str(config.get("claude_config_path") or "").strip()
         claude_agent_module.DEFAULT_CLAUDE_SOURCE_CONFIG_PATH = (
             Path(claude_config_path).expanduser()

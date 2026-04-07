@@ -30,7 +30,7 @@ def test_supported_agents_include_codex_and_claude():
     assert backend.supported_agent_names() == ("claude", "codex")
 
 
-def test_ensure_managed_claude_home_writes_stop_hook(tmp_path, monkeypatch):
+def test_ensure_managed_claude_home_writes_stop_hook(xdg_runtime, tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_home_path", lambda: tmp_path / ".claude")
@@ -64,7 +64,7 @@ def test_ensure_managed_claude_home_writes_stop_hook(tmp_path, monkeypatch):
     assert (Path(target) / ".claude" / "session.json").read_text(encoding="utf-8") == '{"ok":true}\n'
 
 
-def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(tmp_path, monkeypatch):
+def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(xdg_runtime, tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_home_path", lambda: tmp_path / ".claude")
@@ -125,7 +125,7 @@ def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(t
     assert (Path(target) / ".claude" / "state.json").read_text(encoding="utf-8") == '{"theme":"dark"}\n'
 
 
-def test_ensure_managed_claude_home_preserves_existing_source_config(tmp_path, monkeypatch):
+def test_ensure_managed_claude_home_preserves_existing_source_config(xdg_runtime, tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_home_path", lambda: tmp_path / ".claude")
@@ -188,9 +188,37 @@ def test_ensure_managed_claude_home_uses_configured_source_config_path(xdg_runti
     assert settings_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
 
 
+def test_ensure_managed_claude_home_uses_configured_source_home_path(xdg_runtime, tmp_path, monkeypatch):
+    configured_home = tmp_path / "homes" / "claude-custom-home"
+    configured_home.mkdir(parents=True)
+    (configured_home / "workspace.json").write_text('{"source":"configured-home"}\n', encoding="utf-8")
+    backend.save_config(
+        {
+            "_comment": "runtime",
+            "claude_home_path": str(configured_home),
+        }
+    )
+    monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
+
+    target = backend.ensure_managed_claude_home(
+        "repo-claude-main",
+        cwd=tmp_path,
+        discord_channel_id=None,
+    )
+
+    assert (Path(target) / ".claude" / "workspace.json").read_text(encoding="utf-8") == '{"source":"configured-home"}\n'
+
+
 def test_ensure_session_supports_claude_agent(xdg_runtime, tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_home_path", lambda: tmp_path / ".claude")
+    monkeypatch.setattr(
+        backend.claude_agent_module,
+        "source_claude_config_backup_path",
+        lambda: tmp_path / ".claude.json.orche.bak",
+    )
     (tmp_path / ".claude").mkdir()
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%7")
     monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%7")
@@ -256,6 +284,21 @@ def test_get_agent_applies_configured_claude_command_and_process_match(xdg_runti
     assert plugin.matches_process("claude-wrapper", [])
     assert "command -v /opt/tools/claude-wrapper" in launch_command
     assert "exec /opt/tools/claude-wrapper --dangerously-skip-permissions" in launch_command
+
+
+def test_get_agent_applies_configured_claude_home_and_config_paths(xdg_runtime):
+    backend.save_config(
+        {
+            "_comment": "runtime",
+            "claude_home_path": "/opt/tools/claude-home",
+            "claude_config_path": "/opt/tools/claude.json",
+        }
+    )
+
+    backend.get_agent("claude")
+
+    assert backend.claude_agent_module.DEFAULT_CLAUDE_SOURCE_HOME == Path("/opt/tools/claude-home")
+    assert backend.claude_agent_module.DEFAULT_CLAUDE_SOURCE_CONFIG_PATH == Path("/opt/tools/claude.json")
 
 
 def test_claude_managed_launch_command_exports_home_and_uses_runtime_settings(xdg_runtime, tmp_path):

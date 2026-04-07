@@ -234,10 +234,12 @@ def run(
     capture: bool = False,
     cwd: Optional[Path] = None,
     env: Optional[Dict[str, str]] = None,
+    input_text: Optional[str] = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
         text=True,
+        input=input_text,
         check=check,
         capture_output=capture,
         cwd=None if cwd is None else str(cwd),
@@ -251,9 +253,14 @@ def require_tmux() -> None:
     raise OrcheError("tmux is not installed; orche requires tmux")
 
 
-def tmux(*args: str, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess[str]:
+def tmux(
+    *args: str,
+    check: bool = True,
+    capture: bool = True,
+    input_text: Optional[str] = None,
+) -> subprocess.CompletedProcess[str]:
     require_tmux()
-    return run(["tmux", *args], check=check, capture=capture)
+    return run(["tmux", *args], check=check, capture=capture, input_text=input_text)
 
 
 def _known_tmux_sessions() -> Tuple[str, ...]:
@@ -347,7 +354,20 @@ def _tmux_bridge_dispatch(*args: str) -> subprocess.CompletedProcess[str]:
             raise OrcheError("tmux-bridge type requires <session> <text>")
         session, text = args[1], args[2]
         pane_id = _resolve_bridge_pane(session)
-        tmux("send-keys", "-t", pane_id, "-l", text, check=True, capture=True)
+        buffer_name = f"orche-{uuid.uuid4().hex}"
+        try:
+            tmux(
+                "load-buffer",
+                "-b",
+                buffer_name,
+                "-",
+                check=True,
+                capture=True,
+                input_text=text,
+            )
+            tmux("paste-buffer", "-t", pane_id, "-b", buffer_name, check=True, capture=True)
+        finally:
+            tmux("delete-buffer", "-b", buffer_name, check=False, capture=True)
         return _bridge_result(args)
     if command == "keys":
         if len(args) < 3:

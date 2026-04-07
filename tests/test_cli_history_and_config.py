@@ -766,6 +766,26 @@ def test_input_and_key_commands_use_positionals(xdg_runtime, monkeypatch):
     assert "key ok: session=demo-session keys=Down,Enter" in key_result.output
 
 
+def test_tmux_bridge_type_uses_tmux_buffer_for_long_text(xdg_runtime, monkeypatch):
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+    monkeypatch.setattr(backend, "_resolve_bridge_pane", lambda session: "%7")
+
+    def fake_tmux(*args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    result = backend.tmux_bridge("type", "demo-session", "x" * 20000, check=True, capture=True)
+
+    assert result.returncode == 0
+    assert [call[0][0] for call in calls] == ["load-buffer", "paste-buffer", "delete-buffer"]
+    assert calls[0][0][:3] == ("load-buffer", "-b", calls[0][0][2])
+    assert calls[0][1]["input_text"] == "x" * 20000
+    assert calls[1][0][:5] == ("paste-buffer", "-t", "%7", "-b", calls[0][0][2])
+
+
 def test_cancel_command_prints_machine_readable_success(xdg_runtime, monkeypatch):
     runner = CliRunner()
     project_dir = xdg_runtime["home"] / "project"

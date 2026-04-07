@@ -4,6 +4,7 @@ import contextlib
 import json
 import re
 import shlex
+import shutil
 import time
 from pathlib import Path
 
@@ -33,6 +34,7 @@ SOURCE_CONFIG_LOCK_NAME = "claude-source-config"
 SOURCE_CONFIG_BACKUP_SUFFIX = ".orche.bak"
 DEFAULT_CLAUDE_COMMAND = "claude"
 DEFAULT_CLAUDE_SOURCE_CONFIG_PATH = Path.home() / ".claude.json"
+DEFAULT_CLAUDE_SOURCE_HOME = Path.home() / ".claude"
 
 
 def _compact_prompt_text(value: str) -> str:
@@ -128,6 +130,14 @@ def default_settings_path(runtime_home: Path) -> Path:
     return runtime_home / "settings.json"
 
 
+def default_managed_source_config_path(runtime_home: Path) -> Path:
+    return runtime_home / ".claude.json"
+
+
+def default_managed_source_home_path(runtime_home: Path) -> Path:
+    return runtime_home / ".claude"
+
+
 def claude_command_tokens() -> list[str]:
     raw = str(DEFAULT_CLAUDE_COMMAND or "").strip() or "claude"
     tokens = [token for token in shlex.split(raw) if token]
@@ -149,6 +159,10 @@ def source_claude_config_path() -> Path:
 def source_claude_config_backup_path() -> Path:
     config_path = source_claude_config_path()
     return config_path.with_name(config_path.name + SOURCE_CONFIG_BACKUP_SUFFIX)
+
+
+def source_claude_home_path() -> Path:
+    return Path(DEFAULT_CLAUDE_SOURCE_HOME).expanduser()
 
 
 @contextlib.contextmanager
@@ -255,6 +269,16 @@ def build_settings_payload(
     payload["hooks"] = hooks
     return payload
 
+
+def copy_source_home_to_runtime(runtime_home: Path) -> None:
+    source_home = source_claude_home_path()
+    if not source_home.exists():
+        return
+    target_home = default_managed_source_home_path(runtime_home)
+    if target_home.exists():
+        shutil.rmtree(target_home, ignore_errors=True)
+    shutil.copytree(source_home, target_home, symlinks=True, ignore_dangling_symlinks=True)
+
 class ClaudeAgent(AgentPlugin):
     name = "claude"
     display_name = "Claude Code"
@@ -271,6 +295,7 @@ class ClaudeAgent(AgentPlugin):
         source_payload = sync_trust_to_source_config(cwd)
         target = default_claude_home_path(session)
         target.mkdir(parents=True, exist_ok=True)
+        copy_source_home_to_runtime(target)
         write_notify_hook(default_notify_hook_path(target))
         settings_payload = build_settings_payload(
             target,
@@ -278,10 +303,12 @@ class ClaudeAgent(AgentPlugin):
             discord_channel_id=discord_channel_id,
             source_payload=source_payload,
         )
+        serialized_settings = json.dumps(settings_payload, indent=2, ensure_ascii=False) + "\n"
         write_text_atomically(
             default_settings_path(target),
-            json.dumps(settings_payload, indent=2, ensure_ascii=False) + "\n",
+            serialized_settings,
         )
+        write_text_atomically(default_managed_source_config_path(target), serialized_settings)
         return AgentRuntime(home=str(target.resolve()), managed=True, label=self.runtime_label)
 
     def build_launch_command(
@@ -298,11 +325,15 @@ class ClaudeAgent(AgentPlugin):
         orche_shim = ensure_orche_shim()
         prefix.append(f"export ORCHE_BIN={shlex.quote(str(orche_shim))}")
         prefix.append(f"export PATH={shlex.quote(str(orche_shim.parent))}:$PATH")
+        normalized_runtime_home = normalize_runtime_home(runtime.home)
+        if normalized_runtime_home:
+            prefix.append(f"mkdir -p {shlex.quote(normalized_runtime_home)}")
+            prefix.append(f"export HOME={shlex.quote(normalized_runtime_home)}")
         if session:
             prefix.append(f"export ORCHE_SESSION={shlex.quote(session)}")
         if discord_channel_id:
             prefix.append(f"export ORCHE_DISCORD_CHANNEL_ID={shlex.quote(validate_discord_channel_id(discord_channel_id))}")
-        settings_path = default_settings_path(Path(normalize_runtime_home(runtime.home)))
+        settings_path = default_settings_path(Path(normalized_runtime_home))
         command = [
             *self.command_tokens(),
             "--dangerously-skip-permissions",

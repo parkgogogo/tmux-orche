@@ -33,11 +33,15 @@ def test_supported_agents_include_codex_and_claude():
 def test_ensure_managed_claude_home_writes_stop_hook(tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
+    monkeypatch.setattr(backend.claude_agent_module, "source_claude_home_path", lambda: tmp_path / ".claude")
     monkeypatch.setattr(
         backend.claude_agent_module,
         "source_claude_config_backup_path",
         lambda: tmp_path / ".claude.json.orche.bak",
     )
+    source_home = tmp_path / ".claude"
+    source_home.mkdir()
+    (source_home / "session.json").write_text('{"ok":true}\n', encoding="utf-8")
 
     target = backend.ensure_managed_claude_home(
         "repo-claude-main",
@@ -50,21 +54,28 @@ def test_ensure_managed_claude_home_writes_stop_hook(tmp_path, monkeypatch):
     payload = json.loads(settings_path.read_text(encoding="utf-8"))
     command = payload["hooks"]["Stop"][0]["hooks"][0]["command"]
     source_payload = json.loads((tmp_path / ".claude.json").read_text(encoding="utf-8"))
+    mirrored_source_payload = json.loads((Path(target) / ".claude.json").read_text(encoding="utf-8"))
 
     assert hook_path.exists()
     assert "--session repo-claude-main" in command
     assert "--channel-id 1234567890" in command
     assert source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
+    assert mirrored_source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
+    assert (Path(target) / ".claude" / "session.json").read_text(encoding="utf-8") == '{"ok":true}\n'
 
 
 def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
+    monkeypatch.setattr(backend.claude_agent_module, "source_claude_home_path", lambda: tmp_path / ".claude")
     monkeypatch.setattr(
         backend.claude_agent_module,
         "source_claude_config_backup_path",
         lambda: tmp_path / ".claude.json.orche.bak",
     )
+    source_home = tmp_path / ".claude"
+    source_home.mkdir()
+    (source_home / "state.json").write_text('{"theme":"dark"}\n', encoding="utf-8")
     source_config_path = tmp_path / ".claude.json"
     source_config_path.write_text(
         json.dumps(
@@ -102,6 +113,7 @@ def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(t
     )
 
     settings_payload = json.loads((Path(target) / "settings.json").read_text(encoding="utf-8"))
+    mirrored_source_payload = json.loads((Path(target) / ".claude.json").read_text(encoding="utf-8"))
 
     assert settings_payload["numStartups"] == 12
     assert settings_payload["theme"] == "dark-dimmed"
@@ -109,11 +121,14 @@ def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(t
     assert settings_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
     assert settings_payload["hooks"]["Stop"][0]["hooks"][0]["command"] == "/bin/echo existing-stop-hook"
     assert "--session repo-claude-main" in settings_payload["hooks"]["Stop"][1]["hooks"][0]["command"]
+    assert mirrored_source_payload == settings_payload
+    assert (Path(target) / ".claude" / "state.json").read_text(encoding="utf-8") == '{"theme":"dark"}\n'
 
 
 def test_ensure_managed_claude_home_preserves_existing_source_config(tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
+    monkeypatch.setattr(backend.claude_agent_module, "source_claude_home_path", lambda: tmp_path / ".claude")
     monkeypatch.setattr(
         backend.claude_agent_module,
         "source_claude_config_backup_path",
@@ -158,6 +173,7 @@ def test_ensure_managed_claude_home_uses_configured_source_config_path(xdg_runti
         }
     )
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.claude_agent_module, "source_claude_home_path", lambda: tmp_path / ".claude")
 
     target = backend.ensure_managed_claude_home(
         "repo-claude-main",
@@ -174,6 +190,8 @@ def test_ensure_managed_claude_home_uses_configured_source_config_path(xdg_runti
 
 def test_ensure_session_supports_claude_agent(xdg_runtime, tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.claude_agent_module, "source_claude_home_path", lambda: tmp_path / ".claude")
+    (tmp_path / ".claude").mkdir()
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%7")
     monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%7")
 
@@ -237,6 +255,29 @@ def test_get_agent_applies_configured_claude_command_and_process_match(xdg_runti
 
     assert plugin.matches_process("claude-wrapper", [])
     assert "command -v /opt/tools/claude-wrapper" in launch_command
+    assert "exec /opt/tools/claude-wrapper --dangerously-skip-permissions" in launch_command
+
+
+def test_claude_managed_launch_command_exports_home_and_uses_runtime_settings(xdg_runtime, tmp_path):
+    backend.save_config(
+        {
+            "_comment": "runtime",
+            "claude_command": "/opt/tools/claude-wrapper",
+        }
+    )
+
+    plugin = backend.get_agent("claude")
+    runtime = backend.AgentRuntime(home=str(tmp_path / "managed-home"), managed=True, label=plugin.runtime_label)
+    launch_command = plugin.build_launch_command(
+        session="demo-claude",
+        cwd=Path("/tmp/repo"),
+        runtime=runtime,
+        discord_channel_id=None,
+        approve_all=True,
+    )
+
+    assert f"export HOME={tmp_path / 'managed-home'}" in launch_command
+    assert f"--settings {tmp_path / 'managed-home' / 'settings.json'}" in launch_command
     assert "exec /opt/tools/claude-wrapper --dangerously-skip-permissions" in launch_command
 
 

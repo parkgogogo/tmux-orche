@@ -38,7 +38,9 @@ jobs:
         run: bash scripts/build-binary.sh
 
       - name: Smoke test binary
-        run: ./dist/orche/orche --version
+        run: |
+          ./dist/orche/orche --version
+          ./dist/orche/orche config list >/dev/null
 
       - name: Archive binary
         env:

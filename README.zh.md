@@ -20,6 +20,12 @@ curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | sh
 
 当前提供的预编译目标：`darwin-arm64`、`darwin-x64`、`linux-x64`。
 
+二进制安装后可直接更新：
+
+```bash
+orche update
+```
+
 从 PyPI 安装：
 
 ```bash
@@ -303,10 +309,15 @@ orche open --cwd /repo --agent codex --name repo-worker --notify discord:1234567
 
 ```bash
 orche config list
+orche config get claude.command
+orche config set claude.command /opt/tools/claude-wrapper
+orche config set claude.config-path ~/custom/claude.json
 orche config set discord.bot-token "$BOT_TOKEN"
 orche config set discord.mention-user-id 123456789012345678
 orche config set notify.enabled true
 ```
+
+`orche config get/set/list` 读写的是同一个 JSON 配置文件。你既可以通过 CLI 修改，也可以直接编辑这个文件。
 
 配置文件：
 
@@ -314,11 +325,87 @@ orche config set notify.enabled true
 ~/.config/orche/config.json
 ```
 
+如果设置了 `XDG_CONFIG_HOME`，`orche` 会使用：
+
+```text
+$XDG_CONFIG_HOME/orche/config.json
+```
+
 状态目录：
 
 ```text
 ~/.local/share/orche/
 ```
+
+如果设置了 `XDG_DATA_HOME`，`orche` 会使用：
+
+```text
+$XDG_DATA_HOME/orche/
+```
+
+支持的稳定用户配置项：
+
+- `claude.command`
+  覆盖 `orche` 启动 Claude 时使用的命令，默认值是 `claude`。
+- `claude.config-path`
+  覆盖 Claude trust sync 使用的 source config 路径，默认值是 `~/.claude.json`。
+- `discord.bot-token`
+  设置 bot-token 模式下的 Discord bot token。
+- `discord.mention-user-id`
+  设置通知里要 mention 的 Discord user id。
+- `discord.webhook-url`
+  设置 webhook 模式下的 Discord webhook URL。
+- `notify.enabled`
+  全局启用或禁用 notify 投递。
+
+说明：
+
+- `config.json` 里也可能出现一些由 `orche` 自己写入的 session 或 runtime 字段。
+- 这些内部字段不属于稳定的手工配置接口。
+- 用户侧配置建议只使用上面这些稳定配置项。
+
+### Claude 自定义配置
+
+如果你的 Claude 安装有二次包装，或者 source config 不在默认位置，就用这两个配置项。
+
+设置自定义 Claude 可执行命令：
+
+```bash
+orche config set claude.command /opt/tools/claude-wrapper
+```
+
+设置自定义 Claude source config 路径：
+
+```bash
+orche config set claude.config-path ~/custom/claude.json
+```
+
+这两个键分别控制：
+
+- `claude.command`
+  控制 `orche` 启动 Claude 时实际执行的命令，可以是原始二进制，也可以是 wrapper script。
+- `claude.config-path`
+  控制 `orche` 在 managed Claude worker 做 trust sync 时读取哪一个 Claude 配置文件。
+
+典型场景：
+
+- 你机器上的命令名字不是字面量 `claude`
+- 你是通过 wrapper script 启动 Claude，例如 `/opt/tools/claude-wrapper`
+- 你的 Claude 配置文件不在 `~/.claude.json`
+
+`config.json` 示例：
+
+```json
+{
+  "claude_command": "/opt/tools/claude-wrapper",
+  "claude_config_path": "/Users/you/custom/claude.json"
+}
+```
+
+说明：
+
+- `claude.config-path` 只影响 managed Claude session 的 trust sync，不会改变 worker runtime home 本身的位置。
+- 修改这两个键后，新创建的 Claude session 会立即使用新的配置。
 
 ## 前置条件
 

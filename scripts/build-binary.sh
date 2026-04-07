@@ -14,6 +14,7 @@ python -m nuitka \
   --output-filename=orche \
   --include-package=agents \
   --include-package=notify \
+  --include-package=rich._unicode_data \
   --include-module=backend \
   --include-module=paths \
   --include-module=self_update \

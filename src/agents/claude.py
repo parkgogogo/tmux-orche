@@ -226,25 +226,34 @@ def render_stop_hook_command(hook_path: Path, *, session: str, discord_channel_i
     return " ".join(shlex.quote(part) for part in parts)
 
 
-def build_settings_payload(runtime_home: Path, *, session: str, discord_channel_id: str | None) -> dict[str, object]:
-    return {
-        "hooks": {
-            "Stop": [
+def build_settings_payload(
+    runtime_home: Path,
+    *,
+    session: str,
+    discord_channel_id: str | None,
+    source_payload: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload = dict(source_payload or {})
+    existing_hooks = payload.get("hooks")
+    hooks = dict(existing_hooks) if isinstance(existing_hooks, dict) else {}
+    stop_entries = list(hooks.get("Stop")) if isinstance(hooks.get("Stop"), list) else []
+    stop_entries.append(
+        {
+            "hooks": [
                 {
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": render_stop_hook_command(
-                                default_notify_hook_path(runtime_home),
-                                session=session,
-                                discord_channel_id=discord_channel_id,
-                            ),
-                        }
-                    ]
+                    "type": "command",
+                    "command": render_stop_hook_command(
+                        default_notify_hook_path(runtime_home),
+                        session=session,
+                        discord_channel_id=discord_channel_id,
+                    ),
                 }
             ]
         }
-    }
+    )
+    hooks["Stop"] = stop_entries
+    payload["hooks"] = hooks
+    return payload
 
 class ClaudeAgent(AgentPlugin):
     name = "claude"
@@ -259,7 +268,7 @@ class ClaudeAgent(AgentPlugin):
         cwd: Path,
         discord_channel_id: str | None,
     ) -> AgentRuntime:
-        sync_trust_to_source_config(cwd)
+        source_payload = sync_trust_to_source_config(cwd)
         target = default_claude_home_path(session)
         target.mkdir(parents=True, exist_ok=True)
         write_notify_hook(default_notify_hook_path(target))
@@ -267,6 +276,7 @@ class ClaudeAgent(AgentPlugin):
             target,
             session=session,
             discord_channel_id=discord_channel_id,
+            source_payload=source_payload,
         )
         write_text_atomically(
             default_settings_path(target),

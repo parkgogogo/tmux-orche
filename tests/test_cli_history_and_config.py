@@ -51,11 +51,66 @@ def test_backend_list_sessions_returns_sorted_metadata(xdg_runtime):
             "pane_id": "%1",
         },
     )
-
-    sessions = backend.list_sessions()
+    original_session_metadata_is_live = backend.session_metadata_is_live
+    backend.session_metadata_is_live = lambda session, meta=None: True
+    try:
+        sessions = backend.list_sessions()
+    finally:
+        backend.session_metadata_is_live = original_session_metadata_is_live
 
     assert [entry["session"] for entry in sessions] == ["alpha-session", "zeta-session"]
     assert sessions[0]["cwd"] == "/tmp/alpha"
+
+
+def test_list_sessions_prunes_stale_metadata(xdg_runtime, monkeypatch):
+    backend.save_meta(
+        "live-session",
+        {
+            "session": "live-session",
+            "cwd": "/tmp/live",
+            "agent": "codex",
+            "pane_id": "%1",
+        },
+    )
+    backend.save_meta(
+        "stale-session",
+        {
+            "session": "stale-session",
+            "cwd": "/tmp/stale",
+            "agent": "codex",
+            "pane_id": "%2",
+            "tmux_session": backend.tmux_session_name("stale-session"),
+        },
+    )
+
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id == "%1")
+    monkeypatch.setattr(backend, "bridge_resolve", lambda session: None)
+    monkeypatch.setattr(backend, "_tmux_has_session", lambda session_name: False)
+
+    sessions = backend.list_sessions()
+
+    assert [entry["session"] for entry in sessions] == ["live-session"]
+    assert not backend.meta_path("stale-session").exists()
+
+
+def test_session_exists_returns_false_for_stale_metadata(xdg_runtime, monkeypatch):
+    backend.save_meta(
+        "stale-session",
+        {
+            "session": "stale-session",
+            "cwd": "/tmp/stale",
+            "agent": "claude",
+            "pane_id": "%8",
+            "tmux_session": backend.tmux_session_name("stale-session"),
+        },
+    )
+
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: False)
+    monkeypatch.setattr(backend, "bridge_resolve", lambda session: None)
+    monkeypatch.setattr(backend, "_tmux_has_session", lambda session_name: False)
+
+    assert backend.session_exists("stale-session") is False
+    assert not backend.meta_path("stale-session").exists()
 
 
 def test_current_session_id_prefers_orche_session_env(xdg_runtime, monkeypatch):
@@ -148,7 +203,7 @@ def test_close_session_kills_dedicated_tmux_session(xdg_runtime, monkeypatch):
     assert ("kill-session", "-t", backend.tmux_session_name("demo-session")) in calls
 
 
-def test_list_command_shows_sessions(xdg_runtime):
+def test_list_command_shows_sessions(xdg_runtime, monkeypatch):
     backend.save_meta(
         "demo-session",
         {
@@ -158,6 +213,7 @@ def test_list_command_shows_sessions(xdg_runtime):
             "pane_id": "%1",
         },
     )
+    monkeypatch.setattr(backend, "session_metadata_is_live", lambda session, meta=None: True)
 
     result = CliRunner().invoke(app, ["list"])
 

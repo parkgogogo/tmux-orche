@@ -57,6 +57,60 @@ def test_ensure_managed_claude_home_writes_stop_hook(tmp_path, monkeypatch):
     assert source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
 
 
+def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
+    monkeypatch.setattr(
+        backend.claude_agent_module,
+        "source_claude_config_backup_path",
+        lambda: tmp_path / ".claude.json.orche.bak",
+    )
+    source_config_path = tmp_path / ".claude.json"
+    source_config_path.write_text(
+        json.dumps(
+            {
+                "numStartups": 12,
+                "theme": "dark-dimmed",
+                "projects": {
+                    str(tmp_path.resolve()): {
+                        "allowedTools": ["Bash(git status:*)"],
+                    }
+                },
+                "hooks": {
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/bin/echo existing-stop-hook",
+                                }
+                            ]
+                        }
+                    ]
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    target = backend.ensure_managed_claude_home(
+        "repo-claude-main",
+        cwd=tmp_path,
+        discord_channel_id=None,
+    )
+
+    settings_payload = json.loads((Path(target) / "settings.json").read_text(encoding="utf-8"))
+
+    assert settings_payload["numStartups"] == 12
+    assert settings_payload["theme"] == "dark-dimmed"
+    assert settings_payload["projects"][str(tmp_path.resolve())]["allowedTools"] == ["Bash(git status:*)"]
+    assert settings_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
+    assert settings_payload["hooks"]["Stop"][0]["hooks"][0]["command"] == "/bin/echo existing-stop-hook"
+    assert "--session repo-claude-main" in settings_payload["hooks"]["Stop"][1]["hooks"][0]["command"]
+
+
 def test_ensure_managed_claude_home_preserves_existing_source_config(tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
@@ -113,7 +167,9 @@ def test_ensure_managed_claude_home_uses_configured_source_config_path(xdg_runti
 
     assert Path(target).exists()
     source_payload = json.loads(configured_path.read_text(encoding="utf-8"))
+    settings_payload = json.loads((Path(target) / "settings.json").read_text(encoding="utf-8"))
     assert source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
+    assert settings_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
 
 
 def test_ensure_session_supports_claude_agent(xdg_runtime, tmp_path, monkeypatch):

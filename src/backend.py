@@ -819,6 +819,9 @@ def list_sessions() -> List[Dict[str, Any]]:
         if not session:
             continue
         payload["session"] = session
+        if not session_metadata_is_live(session, payload):
+            remove_meta(session)
+            continue
         sessions.append(payload)
     sessions.sort(key=lambda item: str(item.get("session") or ""))
     return sessions
@@ -829,11 +832,33 @@ def session_exists(session: str) -> bool:
     if not session_name:
         return False
     meta = load_meta(session_name)
-    if meta:
+    if meta and session_metadata_is_live(session_name, meta):
         return True
+    if meta:
+        remove_meta(session_name)
     if bridge_resolve(session_name):
         return True
     return _tmux_has_session(tmux_session_name(session_name))
+
+
+def session_metadata_is_live(session: str, meta: Optional[Mapping[str, Any]] = None) -> bool:
+    session_name = str(session or "").strip()
+    if not session_name:
+        return False
+    payload: Mapping[str, Any] = meta or load_meta(session_name)
+    if not payload:
+        return False
+    pane_id = str(payload.get("pane_id") or "").strip()
+    if pane_id and pane_exists(pane_id):
+        return True
+    resolved_pane_id = bridge_resolve(session_name)
+    if resolved_pane_id and pane_exists(resolved_pane_id):
+        return True
+    tmux_mode = str(payload.get("tmux_mode") or "").strip() or "dedicated-session"
+    if tmux_mode == "inline-pane":
+        return False
+    target_tmux_session = str(payload.get("tmux_session") or tmux_session_name(session_name)).strip()
+    return bool(target_tmux_session and _tmux_has_session(target_tmux_session))
 
 
 def _current_tmux_value(fmt: str) -> str:

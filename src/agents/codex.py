@@ -47,7 +47,12 @@ DEFAULT_CODEX_SOURCE_HOME = Path.home() / ".codex"
 MANAGED_CODEX_RUNTIME_DIRS = {".tmp", "log", "shell_snapshots", "tmp"}
 MANAGED_CODEX_RUNTIME_FILE_GLOBS = ("history.jsonl", "logs_*.sqlite*", "state_*.sqlite*")
 TOML_TABLE_HEADER_RE = re.compile(r"^\s*\[\[?.*\]\]?\s*$")
+TOML_NOTICE_HEADER_RE = re.compile(r"^\s*\[notice\]\s*$")
+TOML_FEATURES_HEADER_RE = re.compile(r"^\s*\[features\]\s*$")
 TOML_NOTIFY_KEY_RE = re.compile(r"^\s*notify\s*=")
+TOML_UPDATE_CHECK_RE = re.compile(r"^\s*check_for_update_on_startup\s*=")
+TOML_HIDE_RATE_LIMIT_MODEL_NUDGE_RE = re.compile(r"^\s*hide_rate_limit_model_nudge\s*=")
+TOML_CODEX_HOOKS_RE = re.compile(r"^\s*codex_hooks\s*=")
 TOML_PROJECT_HEADER_RE = re.compile(r"^\s*\[projects\.(.+)\]\s*$")
 TOML_TRUST_LEVEL_RE = re.compile(r"^\s*trust_level\s*=")
 SOURCE_CONFIG_LOCK_NAME = "codex-source-config"
@@ -62,6 +67,10 @@ def default_notify_hook_path(codex_home: Path) -> Path:
     return codex_home / "hooks" / "discord-turn-notify.sh"
 
 
+def default_hooks_path(codex_home: Path) -> Path:
+    return codex_home / "hooks.json"
+
+
 def source_codex_config_path() -> Path:
     return DEFAULT_CODEX_SOURCE_HOME / "config.toml"
 
@@ -70,11 +79,34 @@ def source_codex_config_backup_path() -> Path:
     return source_codex_config_path().with_name(source_codex_config_path().name + SOURCE_CONFIG_BACKUP_SUFFIX)
 
 
-def render_notify_command(hook_path: Path, *, session: str, discord_channel_id: str | None) -> str:
+def render_hook_command(
+    hook_path: Path,
+    *,
+    session: str,
+    discord_channel_id: str | None,
+    status: str | None = None,
+) -> str:
+    values = ["/bin/bash", str(hook_path), "--session", session]
+    if discord_channel_id:
+        values.extend(["--channel-id", validate_discord_channel_id(discord_channel_id)])
+    if status:
+        values.extend(["--status", status])
+    return f"{' '.join(shlex.quote(value) for value in values)} >/dev/null"
+
+
+def render_notify_assignment(hook_path: Path, *, session: str, discord_channel_id: str | None) -> str:
     values = ["/bin/bash", str(hook_path), "--session", session]
     if discord_channel_id:
         values.extend(["--channel-id", validate_discord_channel_id(discord_channel_id)])
     return "notify = [" + ", ".join(json.dumps(value) for value in values) + "]"
+
+
+def render_update_check_setting(enabled: bool) -> str:
+    return f"check_for_update_on_startup = {'true' if enabled else 'false'}"
+
+
+def render_notice_boolean_setting(name: str, enabled: bool) -> str:
+    return f"{name} = {'true' if enabled else 'false'}"
 
 
 def strip_notify_assignments(lines: list[str]) -> list[str]:
@@ -101,6 +133,18 @@ def read_text_or_empty(path: Path) -> str:
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8")
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Refusing to write invalid JSON for {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Refusing to rewrite non-object Codex hooks config at {path}")
+    return payload
 
 
 def _compact_prompt_text(value: str) -> str:
@@ -272,10 +316,10 @@ def upsert_project_trust(content: str, cwd: Path) -> str:
     return updated
 
 
-def upsert_top_level_notify(content: str, notify_line: str) -> str:
-    lines = strip_notify_assignments(content.splitlines(keepends=True))
+def upsert_top_level_setting(content: str, *, notify_line: str, matcher: re.Pattern[str]) -> str:
+    lines = content.splitlines(keepends=True)
     first_table_index = next((index for index, line in enumerate(lines) if TOML_TABLE_HEADER_RE.match(line)), len(lines))
-    prefix = lines[:first_table_index]
+    prefix = [line for line in lines[:first_table_index] if not matcher.match(line)]
     suffix = lines[first_table_index:]
     while prefix and not prefix[-1].strip():
         prefix.pop()
@@ -291,6 +335,135 @@ def upsert_top_level_notify(content: str, notify_line: str) -> str:
         updated.append("\n")
         updated.extend(suffix)
     return "".join(updated)
+
+
+def upsert_top_level_notify(content: str, notify_line: str) -> str:
+    return upsert_top_level_setting(content, notify_line=notify_line, matcher=TOML_NOTIFY_KEY_RE)
+
+
+def upsert_update_check_setting(content: str, *, enabled: bool) -> str:
+    return upsert_top_level_setting(
+        content,
+        notify_line=render_update_check_setting(enabled),
+        matcher=TOML_UPDATE_CHECK_RE,
+    )
+
+
+def upsert_notice_setting(
+    content: str,
+    *,
+    matcher: re.Pattern[str],
+    setting_line: str,
+) -> str:
+    lines = content.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if not TOML_NOTICE_HEADER_RE.match(line):
+            continue
+        section_end = index + 1
+        while section_end < len(lines) and not TOML_TABLE_HEADER_RE.match(lines[section_end]):
+            section_end += 1
+        for setting_index in range(index + 1, section_end):
+            if not matcher.match(lines[setting_index]):
+                continue
+            replacement = setting_line + "\n"
+            if lines[setting_index] == replacement:
+                return content
+            lines[setting_index] = replacement
+            return "".join(lines)
+        lines.insert(section_end, setting_line + "\n")
+        return "".join(lines)
+    updated = content
+    if updated and not updated.endswith("\n"):
+        updated += "\n"
+    if updated.strip():
+        updated += "\n"
+    updated += "[notice]\n"
+    updated += setting_line + "\n"
+    return updated
+
+
+def upsert_hide_rate_limit_model_nudge(content: str, *, enabled: bool) -> str:
+    return upsert_notice_setting(
+        content,
+        matcher=TOML_HIDE_RATE_LIMIT_MODEL_NUDGE_RE,
+        setting_line=render_notice_boolean_setting("hide_rate_limit_model_nudge", enabled),
+    )
+
+
+def upsert_features_setting(
+    content: str,
+    *,
+    matcher: re.Pattern[str],
+    setting_line: str,
+) -> str:
+    lines = content.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if not TOML_FEATURES_HEADER_RE.match(line):
+            continue
+        section_end = index + 1
+        while section_end < len(lines) and not TOML_TABLE_HEADER_RE.match(lines[section_end]):
+            section_end += 1
+        for setting_index in range(index + 1, section_end):
+            if not matcher.match(lines[setting_index]):
+                continue
+            replacement = setting_line + "\n"
+            if lines[setting_index] == replacement:
+                return content
+            lines[setting_index] = replacement
+            return "".join(lines)
+        lines.insert(section_end, setting_line + "\n")
+        return "".join(lines)
+    updated = content
+    if updated and not updated.endswith("\n"):
+        updated += "\n"
+    if updated.strip():
+        updated += "\n"
+    updated += "[features]\n"
+    updated += setting_line + "\n"
+    return updated
+
+
+def upsert_codex_hooks_feature(content: str, *, enabled: bool) -> str:
+    return upsert_features_setting(
+        content,
+        matcher=TOML_CODEX_HOOKS_RE,
+        setting_line=render_notice_boolean_setting("codex_hooks", enabled),
+    )
+
+
+def build_hooks_payload(
+    codex_home: Path,
+    *,
+    session: str,
+    discord_channel_id: str | None,
+    source_payload: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload = dict(source_payload or {})
+    existing_hooks = payload.get("hooks")
+    hooks = dict(existing_hooks) if isinstance(existing_hooks, dict) else {}
+    command_hook = {
+        "type": "command",
+        "command": render_hook_command(
+            default_notify_hook_path(codex_home),
+            session=session,
+            discord_channel_id=discord_channel_id,
+        ),
+    }
+    session_start_entries = list(hooks.get("SessionStart")) if isinstance(hooks.get("SessionStart"), list) else []
+    session_start_entries.append(
+        {
+            "matcher": "startup",
+            "hooks": [command_hook],
+        }
+    )
+    hooks["SessionStart"] = session_start_entries
+    prompt_submit_entries = (
+        list(hooks.get("UserPromptSubmit")) if isinstance(hooks.get("UserPromptSubmit"), list) else []
+    )
+    prompt_submit_entries.append({"hooks": [command_hook]})
+    hooks["UserPromptSubmit"] = prompt_submit_entries
+    payload["hooks"] = hooks
+    return payload
 
 
 @contextlib.contextmanager
@@ -350,15 +523,27 @@ def rewrite_codex_config(
     discord_channel_id: str | None,
 ) -> None:
     config_toml_path = codex_home / "config.toml"
+    hooks_json_path = default_hooks_path(codex_home)
     base_content = sync_trust_to_source_config(cwd)
-    notify_line = render_notify_command(
+    notify_line = render_notify_assignment(
         default_notify_hook_path(codex_home),
         session=session,
         discord_channel_id=discord_channel_id,
     )
-    updated = upsert_top_level_notify(base_content, notify_line)
+    updated = "".join(strip_notify_assignments(base_content.splitlines(keepends=True)))
+    updated = upsert_update_check_setting(updated, enabled=False)
+    updated = upsert_hide_rate_limit_model_nudge(updated, enabled=True)
+    updated = upsert_top_level_notify(updated, notify_line)
+    updated = upsert_codex_hooks_feature(updated, enabled=True)
     validate_toml_document(updated, label=str(config_toml_path))
     write_text_atomically(config_toml_path, updated)
+    hooks_payload = build_hooks_payload(
+        codex_home,
+        session=session,
+        discord_channel_id=discord_channel_id,
+        source_payload=_read_json_object(hooks_json_path),
+    )
+    write_text_atomically(hooks_json_path, json.dumps(hooks_payload, indent=2, ensure_ascii=False) + "\n")
 
 
 class CodexAgent(AgentPlugin):
@@ -407,7 +592,15 @@ class CodexAgent(AgentPlugin):
             prefix.append(f"export ORCHE_SESSION={shlex.quote(session)}")
         if discord_channel_id:
             prefix.append(f"export ORCHE_DISCORD_CHANNEL_ID={shlex.quote(validate_discord_channel_id(discord_channel_id))}")
-        command = ["codex", "--no-alt-screen", "-C", str(cwd), "--dangerously-bypass-approvals-and-sandbox"]
+        command = [
+            "codex",
+            "--enable",
+            "codex_hooks",
+            "--no-alt-screen",
+            "-C",
+            str(cwd),
+            "--dangerously-bypass-approvals-and-sandbox",
+        ]
         prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
         return " && ".join(prefix)
 

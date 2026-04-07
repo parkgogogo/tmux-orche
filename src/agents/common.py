@@ -10,7 +10,6 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from notify_hook import NOTIFY_DISCORD_SH
 from paths import bridges_dir, ensure_directories
 
 
@@ -69,7 +68,18 @@ def remove_runtime_home(runtime_home: str | Path) -> None:
 
 def write_notify_hook(hook_path: Path) -> None:
     hook_path.parent.mkdir(parents=True, exist_ok=True)
-    hook_path.write_text(NOTIFY_DISCORD_SH, encoding="utf-8")
+    orche_command = " ".join(shlex.quote(part) for part in orche_bootstrap_command())
+    lines = [
+        "#!/bin/sh",
+        "set -eu",
+    ]
+    for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME"):
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            lines.append(f"export {name}={shlex.quote(value)}")
+    lines.append(f'exec {orche_command} notify-internal "$@"')
+    lines.append("")
+    hook_path.write_text("\n".join(lines), encoding="utf-8")
     hook_path.chmod(0o755)
 
 

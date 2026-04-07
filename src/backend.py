@@ -1431,6 +1431,56 @@ def wait_for_agent_ready(plugin: AgentPlugin, pane_id: str, cwd: Path, *, timeou
     raise OrcheError(f"Timed out waiting for {plugin.display_name} to become ready in {pane_id}")
 
 
+def wait_for_managed_startup_ready(
+    session: str,
+    plugin: AgentPlugin,
+    pane_id: str,
+    cwd: Path,
+    *,
+    timeout: float = STARTUP_TIMEOUT,
+) -> str:
+    deadline = time.time() + timeout
+    ready_streak = 0
+    while time.time() <= deadline:
+        meta = load_meta(session)
+        startup = meta.get("startup") if isinstance(meta.get("startup"), dict) else {}
+        startup_state = str(startup.get("state") or "").strip().lower()
+        if startup_state == "ready":
+            return pane_id
+        if startup_state == "blocked":
+            blocked_reason = str(startup.get("blocked_reason") or "").strip()
+            detail = blocked_reason or f"{plugin.display_name} startup blocked before reaching ready state in {pane_id}"
+            raise AgentStartupBlockedError(detail)
+        capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES)
+        if any(prompt in capture for prompt in plugin.login_prompts):
+            raise OrcheError(f"{plugin.display_name} is not logged in inside the tmux pane")
+        ready_candidate = plugin.name == "codex" and plugin.capture_has_ready_surface(capture, cwd)
+        ready_streak = ready_streak + 1 if ready_candidate else 0
+        if ready_streak >= plugin.ready_streak_required:
+            mark_session_startup_ready(session, source="ready-surface-fallback")
+            return pane_id
+        info = get_pane_info(pane_id)
+        if info is None or info.get("pane_dead") == "1":
+            raise OrcheError(f"{plugin.display_name} pane exited before startup completed: {pane_id}")
+        if not is_agent_running(plugin, pane_id):
+            raise OrcheError(f"{plugin.display_name} process exited before startup completed: {pane_id}")
+        time.sleep(0.5)
+    reason = f"Timed out waiting for {plugin.display_name} SessionStart(startup) hook in {pane_id}"
+    mark_session_startup_timeout(session, reason=reason)
+    raise OrcheError(reason)
+
+
+def wait_for_claude_startup_ready(
+    session: str,
+    plugin: AgentPlugin,
+    pane_id: str,
+    cwd: Path,
+    *,
+    timeout: float = STARTUP_TIMEOUT,
+) -> str:
+    return wait_for_managed_startup_ready(session, plugin, pane_id, cwd, timeout=timeout)
+
+
 def wait_for_agent_process_start(
     plugin: AgentPlugin,
     pane_id: str,
@@ -1783,6 +1833,129 @@ def _current_turn_entry(
     if last_completed_turn:
         return "last_completed_turn", dict(last_completed_turn)
     return "", {}
+
+
+def initialize_session_startup(
+    session: str,
+    *,
+    state: str = "launching",
+    started_at: float | None = None,
+) -> Dict[str, Any]:
+    timestamp = started_at if started_at is not None else time.time()
+    with session_lock(session):
+        meta = load_meta(session)
+        startup = {
+            "state": state,
+            "started_at": timestamp,
+            "ready_at": 0.0,
+            "ready_source": "",
+            "blocked_at": 0.0,
+            "blocked_reason": "",
+            "blocked_event": "",
+            "updated_at": timestamp,
+        }
+        meta["startup"] = startup
+        save_meta(session, meta)
+        return dict(startup)
+
+
+def mark_session_startup_ready(session: str, *, source: str) -> Dict[str, Any]:
+    timestamp = time.time()
+    with session_lock(session):
+        meta = load_meta(session)
+        startup = dict(meta.get("startup") or {})
+        startup.update(
+            {
+                "state": "ready",
+                "ready_at": float(startup.get("ready_at") or timestamp),
+                "ready_source": str(source or "").strip(),
+                "blocked_at": 0.0,
+                "blocked_reason": "",
+                "blocked_event": "",
+                "updated_at": timestamp,
+            }
+        )
+        if not startup.get("started_at"):
+            startup["started_at"] = timestamp
+        meta["startup"] = startup
+        save_meta(session, meta)
+        return dict(startup)
+
+
+def mark_session_startup_timeout(session: str, *, reason: str = "") -> Dict[str, Any]:
+    timestamp = time.time()
+    with session_lock(session):
+        meta = load_meta(session)
+        startup = dict(meta.get("startup") or {})
+        startup.update(
+            {
+                "state": "timeout",
+                "blocked_reason": str(reason or startup.get("blocked_reason") or "").strip(),
+                "updated_at": timestamp,
+            }
+        )
+        if not startup.get("started_at"):
+            startup["started_at"] = timestamp
+        meta["startup"] = startup
+        save_meta(session, meta)
+        return dict(startup)
+
+
+def mark_session_startup_blocked(
+    session: str,
+    *,
+    reason: str,
+    event_name: str,
+) -> Tuple[Dict[str, Any], bool]:
+    timestamp = time.time()
+    with session_lock(session):
+        meta = load_meta(session)
+        startup = dict(meta.get("startup") or {})
+        state = str(startup.get("state") or "").strip().lower()
+        if state != "launching":
+            return startup, False
+        blocked_reason = str(reason or "").strip()
+        blocked_event = str(event_name or "").strip()
+        changed = (
+            str(startup.get("blocked_reason") or "") != blocked_reason
+            or str(startup.get("blocked_event") or "") != blocked_event
+            or state != "blocked"
+        )
+        startup.update(
+            {
+                "state": "blocked",
+                "blocked_at": timestamp,
+                "blocked_reason": blocked_reason,
+                "blocked_event": blocked_event,
+                "updated_at": timestamp,
+            }
+        )
+        if not startup.get("started_at"):
+            startup["started_at"] = timestamp
+        meta["startup"] = startup
+        save_meta(session, meta)
+        return dict(startup), changed
+
+
+def mark_pending_turn_prompt_accepted(session: str, *, source: str = "user-prompt-submit") -> Dict[str, Any]:
+    timestamp = time.time()
+    with session_lock(session):
+        meta = load_meta(session)
+        pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
+        if not pending_turn:
+            return {}
+        prompt_ack = dict(pending_turn.get("prompt_ack") or {})
+        prompt_ack.update(
+            {
+                "state": "accepted",
+                "accepted_at": timestamp,
+                "source": str(source or "").strip(),
+            }
+        )
+        pending_turn["prompt_ack"] = prompt_ack
+        meta["pending_turn"] = pending_turn
+        save_meta(session, meta)
+        return dict(prompt_ack)
 
 
 def claim_turn_notification(
@@ -2449,7 +2622,7 @@ def ensure_session(
         )
         resolved_runtime_home = normalize_runtime_home(runtime.home)
         managed_runtime_home = True
-    if managed_runtime_home:
+    if managed_runtime_home and existing_meta and runtime_home_from_meta(existing_meta):
         runtime = prepare_managed_runtime(
             plugin,
             session,
@@ -2479,6 +2652,33 @@ def ensure_session(
         host_pane_id=host_pane_id,
         tmux_host_session=tmux_host_session,
     )
+    meta = load_meta(session)
+    meta.update(
+        {
+            "backend": BACKEND,
+            "session": session,
+            "cwd": str(cwd),
+            "agent": agent,
+            "pane_id": pane_id,
+            "launch_mode": "managed",
+            "tmux_mode": tmux_mode,
+            "host_pane_id": host_pane_id,
+            "tmux_host_session": tmux_host_session,
+            "last_seen_at": time.time(),
+        }
+    )
+    apply_runtime_to_meta(meta, agent=agent, runtime=runtime)
+    meta.pop("native_cli_args", None)
+    meta.pop("discord_channel_id", None)
+    meta.pop("discord_session", None)
+    meta.pop("notify_routes", None)
+    if resolved_notify_binding:
+        meta["notify_binding"] = resolved_notify_binding
+    else:
+        meta.pop("notify_binding", None)
+    save_meta(session, meta)
+    if plugin.name in {"claude", "codex"} and runtime.managed:
+        initialize_session_startup(session)
     pane_id = ensure_agent_running(
         plugin,
         session,
@@ -2513,6 +2713,10 @@ def ensure_session(
     else:
         meta.pop("notify_binding", None)
     save_meta(session, meta)
+    if runtime.managed and plugin.name in {"claude", "codex"}:
+        wait_for_managed_startup_ready(session, plugin, pane_id, cwd)
+    elif plugin.name == "claude":
+        wait_for_agent_ready(plugin, pane_id, cwd)
     update_runtime_config(
         session=session,
         cwd=cwd,
@@ -2560,6 +2764,11 @@ def send_prompt(
         "submitted_at": time.time(),
         "pane_id": pane_id,
         "notifications": {},
+        "prompt_ack": {
+            "state": "pending",
+            "accepted_at": 0.0,
+            "source": "",
+        },
         "watchdog": {
             "state": "queued",
             "started_at": 0.0,
@@ -2627,6 +2836,8 @@ def build_status(session: str) -> Dict[str, Any]:
     agent_running = bool(pane_id and is_agent_running(plugin, pane_id))
     pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else {}
     watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
+    startup = meta.get("startup") if isinstance(meta.get("startup"), dict) else {}
+    prompt_ack = pending_turn.get("prompt_ack") if isinstance(pending_turn.get("prompt_ack"), dict) else {}
     return {
         "backend": BACKEND,
         "session": session,
@@ -2647,6 +2858,8 @@ def build_status(session: str) -> Dict[str, Any]:
         "notify_binding": notify_binding,
         "pending_turn_id": str(pending_turn.get("turn_id") or ""),
         "pending_turn_submitted_at": float(pending_turn.get("submitted_at") or 0.0),
+        "startup": dict(startup),
+        "prompt_ack": dict(prompt_ack),
         "watchdog": dict(watchdog),
     }
 

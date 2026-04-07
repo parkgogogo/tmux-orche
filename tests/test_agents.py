@@ -30,7 +30,7 @@ def test_supported_agents_include_codex_and_claude():
     assert backend.supported_agent_names() == ("claude", "codex")
 
 
-def test_ensure_managed_claude_home_writes_stop_hook(xdg_runtime, tmp_path, monkeypatch):
+def test_ensure_managed_claude_home_writes_runtime_hooks(xdg_runtime, tmp_path, monkeypatch):
     monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
     monkeypatch.setattr(backend.claude_agent_module, "source_claude_home_path", lambda: tmp_path / ".claude")
@@ -49,7 +49,7 @@ def test_ensure_managed_claude_home_writes_stop_hook(xdg_runtime, tmp_path, monk
         discord_channel_id="1234567890",
     )
 
-    settings_path = Path(target) / "settings.json"
+    settings_path = Path(target) / ".claude" / "settings.json"
     hook_path = Path(target) / "hooks" / "discord-turn-notify.sh"
     payload = json.loads(settings_path.read_text(encoding="utf-8"))
     command = payload["hooks"]["Stop"][0]["hooks"][0]["command"]
@@ -59,6 +59,10 @@ def test_ensure_managed_claude_home_writes_stop_hook(xdg_runtime, tmp_path, monk
     assert hook_path.exists()
     assert "--session repo-claude-main" in command
     assert "--channel-id 1234567890" in command
+    assert payload["hooks"]["SessionStart"][0]["matcher"] == "startup"
+    assert payload["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"].endswith("--channel-id 1234567890")
+    assert payload["hooks"]["Notification"][0]["hooks"][0]["command"].endswith("--channel-id 1234567890 --status warning")
+    assert payload["hooks"]["PermissionRequest"][0]["hooks"][0]["command"].endswith("--channel-id 1234567890 --status warning")
     assert source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
     assert mirrored_source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
     assert (Path(target) / ".claude" / "session.json").read_text(encoding="utf-8") == '{"ok":true}\n'
@@ -76,18 +80,23 @@ def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(x
     source_home = tmp_path / ".claude"
     source_home.mkdir()
     (source_home / "state.json").write_text('{"theme":"dark"}\n', encoding="utf-8")
-    source_config_path = tmp_path / ".claude.json"
-    source_config_path.write_text(
+    (source_home / "settings.json").write_text(
         json.dumps(
             {
                 "numStartups": 12,
                 "theme": "dark-dimmed",
-                "projects": {
-                    str(tmp_path.resolve()): {
-                        "allowedTools": ["Bash(git status:*)"],
-                    }
-                },
                 "hooks": {
+                    "SessionStart": [
+                        {
+                            "matcher": "startup",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/bin/echo existing-session-start-hook",
+                                }
+                            ],
+                        }
+                    ],
                     "Stop": [
                         {
                             "hooks": [
@@ -105,6 +114,21 @@ def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(x
         + "\n",
         encoding="utf-8",
     )
+    source_config_path = tmp_path / ".claude.json"
+    source_config_path.write_text(
+        json.dumps(
+            {
+                "projects": {
+                    str(tmp_path.resolve()): {
+                        "allowedTools": ["Bash(git status:*)"],
+                    }
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     target = backend.ensure_managed_claude_home(
         "repo-claude-main",
@@ -112,17 +136,112 @@ def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(x
         discord_channel_id=None,
     )
 
-    settings_payload = json.loads((Path(target) / "settings.json").read_text(encoding="utf-8"))
+    settings_payload = json.loads((Path(target) / ".claude" / "settings.json").read_text(encoding="utf-8"))
     mirrored_source_payload = json.loads((Path(target) / ".claude.json").read_text(encoding="utf-8"))
 
     assert settings_payload["numStartups"] == 12
     assert settings_payload["theme"] == "dark-dimmed"
-    assert settings_payload["projects"][str(tmp_path.resolve())]["allowedTools"] == ["Bash(git status:*)"]
-    assert settings_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
+    assert settings_payload["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "/bin/echo existing-session-start-hook"
+    assert "--session repo-claude-main" in settings_payload["hooks"]["SessionStart"][1]["hooks"][0]["command"]
     assert settings_payload["hooks"]["Stop"][0]["hooks"][0]["command"] == "/bin/echo existing-stop-hook"
     assert "--session repo-claude-main" in settings_payload["hooks"]["Stop"][1]["hooks"][0]["command"]
-    assert mirrored_source_payload == settings_payload
+    assert mirrored_source_payload["projects"][str(tmp_path.resolve())]["allowedTools"] == ["Bash(git status:*)"]
+    assert mirrored_source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
     assert (Path(target) / ".claude" / "state.json").read_text(encoding="utf-8") == '{"theme":"dark"}\n'
+
+
+def test_ensure_managed_codex_home_disables_update_checks_without_mutating_source_setting(xdg_runtime, tmp_path, monkeypatch):
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+
+    source_home = tmp_path / ".codex"
+    source_home.mkdir()
+    source_config_path = source_home / "config.toml"
+    source_config_path.write_text(
+        'model = "gpt-5"\ncheck_for_update_on_startup = true\n\n[notice]\nhide_rate_limit_model_nudge = false\n',
+        encoding="utf-8",
+    )
+
+    target = backend.ensure_managed_codex_home(
+        "repo-codex-main",
+        cwd=tmp_path,
+        discord_channel_id="1234567890",
+    )
+
+    managed_config = (Path(target) / "config.toml").read_text(encoding="utf-8")
+    hooks_payload = json.loads((Path(target) / "hooks.json").read_text(encoding="utf-8"))
+    source_config = source_config_path.read_text(encoding="utf-8")
+
+    assert 'check_for_update_on_startup = false' in managed_config
+    assert 'check_for_update_on_startup = true' in source_config
+    assert 'hide_rate_limit_model_nudge = true' in managed_config
+    assert 'hide_rate_limit_model_nudge = false' in source_config
+    assert 'notify = ["/bin/bash"' in managed_config
+    assert "codex_hooks = true" in managed_config
+    assert f'[projects.{json.dumps(str(tmp_path.resolve()))}]' in managed_config
+    assert 'trust_level = "trusted"' in managed_config
+    assert hooks_payload["hooks"]["SessionStart"][0]["matcher"] == "startup"
+    assert "--session repo-codex-main" in hooks_payload["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert "--channel-id 1234567890" in hooks_payload["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+    assert hooks_payload["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"].endswith(">/dev/null")
+    assert "Stop" not in hooks_payload["hooks"]
+
+
+def test_ensure_managed_codex_home_preserves_existing_hooks_json(xdg_runtime, tmp_path, monkeypatch):
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+
+    source_home = tmp_path / ".codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+    (source_home / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "matcher": "startup",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/bin/echo existing-session-start-hook",
+                                }
+                            ],
+                        }
+                    ],
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/bin/echo existing-stop-hook",
+                                }
+                            ]
+                        }
+                    ],
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    target = backend.ensure_managed_codex_home(
+        "repo-codex-main",
+        cwd=tmp_path,
+        discord_channel_id=None,
+    )
+
+    hooks_payload = json.loads((Path(target) / "hooks.json").read_text(encoding="utf-8"))
+
+    assert hooks_payload["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "/bin/echo existing-session-start-hook"
+    assert "--session repo-codex-main" in hooks_payload["hooks"]["SessionStart"][1]["hooks"][0]["command"]
+    assert hooks_payload["hooks"]["Stop"][0]["hooks"][0]["command"] == "/bin/echo existing-stop-hook"
 
 
 def test_ensure_managed_claude_home_preserves_existing_source_config(xdg_runtime, tmp_path, monkeypatch):
@@ -183,15 +302,18 @@ def test_ensure_managed_claude_home_uses_configured_source_config_path(xdg_runti
 
     assert Path(target).exists()
     source_payload = json.loads(configured_path.read_text(encoding="utf-8"))
-    settings_payload = json.loads((Path(target) / "settings.json").read_text(encoding="utf-8"))
+    settings_payload = json.loads((Path(target) / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    mirrored_source_payload = json.loads((Path(target) / ".claude.json").read_text(encoding="utf-8"))
     assert source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
-    assert settings_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
+    assert mirrored_source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
+    assert "--session repo-claude-main" in settings_payload["hooks"]["Stop"][0]["hooks"][0]["command"]
 
 
 def test_ensure_managed_claude_home_uses_configured_source_home_path(xdg_runtime, tmp_path, monkeypatch):
     configured_home = tmp_path / "homes" / "claude-custom-home"
     configured_home.mkdir(parents=True)
     (configured_home / "workspace.json").write_text('{"source":"configured-home"}\n', encoding="utf-8")
+    (configured_home / "settings.json").write_text('{"theme":"configured-home"}\n', encoding="utf-8")
     backend.save_config(
         {
             "_comment": "runtime",
@@ -208,6 +330,8 @@ def test_ensure_managed_claude_home_uses_configured_source_home_path(xdg_runtime
     )
 
     assert (Path(target) / ".claude" / "workspace.json").read_text(encoding="utf-8") == '{"source":"configured-home"}\n'
+    settings_payload = json.loads((Path(target) / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert settings_payload["theme"] == "configured-home"
 
 
 def test_ensure_session_supports_claude_agent(xdg_runtime, tmp_path, monkeypatch):
@@ -222,6 +346,11 @@ def test_ensure_session_supports_claude_agent(xdg_runtime, tmp_path, monkeypatch
     (tmp_path / ".claude").mkdir()
     monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%7")
     monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%7")
+    monkeypatch.setattr(
+        backend,
+        "wait_for_managed_startup_ready",
+        lambda session, plugin, pane_id, cwd, timeout=backend.STARTUP_TIMEOUT: pane_id,
+    )
 
     pane_id = backend.ensure_session(
         "demo-claude",
@@ -237,6 +366,66 @@ def test_ensure_session_supports_claude_agent(xdg_runtime, tmp_path, monkeypatch
     assert meta["runtime_home"].endswith("demo-claude")
     assert meta["runtime_label"] == "Claude settings"
     assert meta["notify_binding"]["provider"] == "discord"
+
+
+def test_ensure_session_waits_for_managed_claude_startup_hook(xdg_runtime, tmp_path, monkeypatch):
+    monkeypatch.setattr(backend.claude_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.claude_agent_module, "source_claude_config_path", lambda: tmp_path / ".claude.json")
+    monkeypatch.setattr(backend.claude_agent_module, "source_claude_home_path", lambda: tmp_path / ".claude")
+    monkeypatch.setattr(
+        backend.claude_agent_module,
+        "source_claude_config_backup_path",
+        lambda: tmp_path / ".claude.json.orche.bak",
+    )
+    (tmp_path / ".claude").mkdir()
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%7")
+    monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%7")
+    monkeypatch.setattr(
+        backend,
+        "wait_for_managed_startup_ready",
+        lambda session, plugin, pane_id, cwd, timeout=backend.STARTUP_TIMEOUT: calls.append((session, pane_id)) or pane_id,
+    )
+
+    pane_id = backend.ensure_session(
+        "demo-claude",
+        tmp_path,
+        "claude",
+        notify_to="discord",
+        notify_target="123",
+    )
+
+    assert pane_id == "%7"
+    assert calls == [("demo-claude", "%7")]
+    assert backend.load_meta("demo-claude")["startup"]["state"] == "launching"
+
+
+def test_ensure_session_waits_for_managed_codex_startup_hook(xdg_runtime, tmp_path, monkeypatch):
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+    (tmp_path / ".codex").mkdir()
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%9")
+    monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%9")
+    monkeypatch.setattr(
+        backend,
+        "wait_for_managed_startup_ready",
+        lambda session, plugin, pane_id, cwd, timeout=backend.STARTUP_TIMEOUT: calls.append((session, pane_id)) or pane_id,
+    )
+
+    pane_id = backend.ensure_session(
+        "demo-codex",
+        tmp_path,
+        "codex",
+        notify_to="discord",
+        notify_target="123",
+    )
+
+    assert pane_id == "%9"
+    assert calls == [("demo-codex", "%9")]
+    assert backend.load_meta("demo-codex")["startup"]["state"] == "launching"
 
 
 def test_ensure_native_session_supports_claude_agent_and_stores_native_args(xdg_runtime, tmp_path, monkeypatch):
@@ -320,7 +509,8 @@ def test_claude_managed_launch_command_exports_home_and_uses_runtime_settings(xd
     )
 
     assert f"export HOME={tmp_path / 'managed-home'}" in launch_command
-    assert f"--settings {tmp_path / 'managed-home' / 'settings.json'}" in launch_command
+    assert "--setting-sources user" in launch_command
+    assert f"--settings {tmp_path / 'managed-home' / '.claude' / 'settings.json'}" in launch_command
     assert "exec /opt/tools/claude-wrapper --dangerously-skip-permissions" in launch_command
 
 
@@ -392,6 +582,22 @@ def test_build_native_agent_launch_command_checks_cli_presence(xdg_runtime, tmp_
         f"exec codex --no-alt-screen -C {tmp_path} --dangerously-bypass-approvals-and-sandbox --model gpt-5.4"
         in command
     )
+
+
+def test_codex_managed_launch_command_enables_hooks(xdg_runtime, tmp_path):
+    plugin = backend.get_agent("codex")
+    runtime = backend.AgentRuntime(home=str(tmp_path / "managed-home"), managed=True, label=plugin.runtime_label)
+
+    command = plugin.build_launch_command(
+        session="demo-codex",
+        cwd=tmp_path,
+        runtime=runtime,
+        discord_channel_id=None,
+        approve_all=True,
+    )
+
+    assert f"export CODEX_HOME={tmp_path / 'managed-home'}" in command
+    assert "exec codex --enable codex_hooks --no-alt-screen" in command
 
 
 def test_get_pane_info_reads_exact_target_pane(xdg_runtime, monkeypatch):
@@ -532,6 +738,27 @@ def test_wait_for_agent_process_start_rejects_plain_shell_prompt(monkeypatch):
         backend.wait_for_agent_process_start(plugin, "%1", timeout=0.1)
 
 
+def test_wait_for_managed_startup_ready_falls_back_to_codex_ready_surface(xdg_runtime, tmp_path, monkeypatch):
+    session = "demo-codex-startup-fallback"
+    backend.save_meta(session, {"session": session, "startup": {"state": "launching"}})
+    plugin = backend.get_agent("codex")
+    capture = (
+        "OpenAI Codex\n"
+        f"directory: {tmp_path}\n"
+        "Esc to interrupt\n"
+    )
+
+    monkeypatch.setattr(backend, "read_pane", lambda pane_id, lines=backend.DEFAULT_CAPTURE_LINES: capture)
+    monkeypatch.setattr(backend, "get_pane_info", lambda pane_id: {"pane_dead": "0"})
+    monkeypatch.setattr(backend, "is_agent_running", lambda plugin, pane_id: True)
+
+    pane_id = backend.wait_for_managed_startup_ready(session, plugin, "%1", tmp_path, timeout=1.5)
+
+    assert pane_id == "%1"
+    assert backend.load_meta(session)["startup"]["state"] == "ready"
+    assert backend.load_meta(session)["startup"]["ready_source"] == "ready-surface-fallback"
+
+
 def test_codex_submit_prompt_waits_before_enter(monkeypatch):
     plugin = CodexAgent()
     bridge = FakeBridge()
@@ -666,6 +893,11 @@ def test_ensure_session_uses_inline_pane_for_tmux_notify_targeting_current_sessi
 
     monkeypatch.setattr(backend, "ensure_pane", fake_ensure_pane)
     monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%7")
+    monkeypatch.setattr(
+        backend,
+        "wait_for_managed_startup_ready",
+        lambda session, plugin, pane_id, cwd, timeout=backend.STARTUP_TIMEOUT: pane_id,
+    )
 
     pane_id = backend.ensure_session(
         "repo-worker",

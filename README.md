@@ -20,6 +20,12 @@ curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | sh
 
 Supported prebuilt targets: `darwin-arm64`, `darwin-x64`, `linux-x64`.
 
+Update a binary install in place:
+
+```bash
+orche update
+```
+
 Install from PyPI:
 
 ```bash
@@ -327,10 +333,15 @@ Notes:
 
 ```bash
 orche config list
+orche config get claude.command
+orche config set claude.command /opt/tools/claude-wrapper
+orche config set claude.config-path ~/custom/claude.json
 orche config set discord.bot-token "$BOT_TOKEN"
 orche config set discord.mention-user-id 123456789012345678
 orche config set notify.enabled true
 ```
+
+`orche config get/set/list` reads and writes the same JSON config file. You can update values through the CLI or edit the file directly.
 
 Config file:
 
@@ -338,11 +349,85 @@ Config file:
 ~/.config/orche/config.json
 ```
 
+If `XDG_CONFIG_HOME` is set, `orche` uses:
+
+```text
+$XDG_CONFIG_HOME/orche/config.json
+```
+
 State directory:
 
 ```text
 ~/.local/share/orche/
 ```
+
+If `XDG_DATA_HOME` is set, `orche` uses:
+
+```text
+$XDG_DATA_HOME/orche/
+```
+
+Supported user config keys:
+
+- `claude.command`
+  Override the Claude CLI command that `orche` launches. Default is `claude`.
+- `claude.config-path`
+  Override the Claude source config path used for trust sync. Default is `~/.claude.json`.
+- `discord.bot-token`
+  Set the Discord bot token used for bot-token delivery.
+- `discord.mention-user-id`
+  Set the Discord user id to mention in delivered notifications.
+- `discord.webhook-url`
+  Set the Discord webhook URL used for webhook delivery.
+- `notify.enabled`
+  Enable or disable notify delivery globally.
+
+Notes:
+
+- `config.json` may also contain session or runtime fields written by `orche` itself.
+- Those internal fields are not part of the stable hand-edited config surface.
+- Prefer the keys above for user-managed configuration.
+
+### Claude custom config
+
+Use these when your Claude installation is wrapped or its source config is not in the default location.
+
+Set a custom Claude executable:
+
+```bash
+orche config set claude.command /opt/tools/claude-wrapper
+```
+
+Set a custom Claude source config path for trust sync:
+
+```bash
+orche config set claude.config-path ~/custom/claude.json
+```
+
+What each key changes:
+
+- `claude.command` changes the binary or wrapper command that `orche` executes when it launches Claude.
+- `claude.config-path` changes which Claude config file `orche` reads when it syncs trust settings into a managed worker runtime.
+
+Typical cases:
+
+- your system command is not literally named `claude`
+- you use a wrapper script such as `/opt/tools/claude-wrapper`
+- your Claude config lives somewhere other than `~/.claude.json`
+
+Example `config.json`:
+
+```json
+{
+  "claude_command": "/opt/tools/claude-wrapper",
+  "claude_config_path": "/Users/you/custom/claude.json"
+}
+```
+
+Notes:
+
+- `claude.config-path` affects trust sync for managed Claude sessions; it does not change the worker runtime home path itself.
+- after changing either key, new Claude sessions use the updated value immediately.
 
 ## Prerequisites
 

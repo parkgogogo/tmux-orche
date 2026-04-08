@@ -866,6 +866,42 @@ def test_ensure_pane_inline_mode_splits_current_tmux_session(xdg_runtime, tmp_pa
     )
 
 
+def test_ensure_pane_dedicated_mode_uses_new_session_output_for_new_sessions(xdg_runtime, tmp_path, monkeypatch):
+    tmux_calls = []
+    expected_tmux_session = backend.tmux_session_name("demo-dedicated-worker")
+
+    monkeypatch.setattr(backend, "bridge_name_pane", lambda pane_id, session: None)
+    monkeypatch.setattr(
+        backend,
+        "list_panes",
+        lambda target=None: (_ for _ in ()).throw(AssertionError("list_panes should not be used for a fresh dedicated session")),
+    )
+
+    def fake_tmux(*args, **kwargs):
+        tmux_calls.append(args)
+        if list(args) == ["has-session", "-t", expected_tmux_session]:
+            return subprocess.CompletedProcess(["tmux", *args], 1, "", "")
+        if list(args[:4]) == ["new-session", "-d", "-s", expected_tmux_session]:
+            return subprocess.CompletedProcess(
+                ["tmux", *args],
+                0,
+                f"{expected_tmux_session}\t%12\t@4\torche-demo-dedicated-worker\n",
+                "",
+            )
+        return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    pane_id = backend.ensure_pane("demo-dedicated-worker", tmp_path, "codex")
+
+    meta = backend.load_meta("demo-dedicated-worker")
+
+    assert pane_id == "%12"
+    assert meta["tmux_session"] == expected_tmux_session
+    assert meta["window_name"] == "orche-demo-dedicated-worker"
+    assert any(call[:4] == ("new-session", "-d", "-s", expected_tmux_session) for call in tmux_calls)
+
+
 def test_ensure_session_uses_inline_pane_for_tmux_notify_targeting_current_session(xdg_runtime, tmp_path, monkeypatch):
     captured = {}
     monkeypatch.setattr(

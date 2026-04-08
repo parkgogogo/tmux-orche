@@ -1220,10 +1220,10 @@ def ensure_tmux_session(session: str, cwd: Path) -> str:
     return name
 
 
-def _pane_record_from_split_output(output: str) -> Dict[str, str]:
+def _pane_record_from_tmux_output(output: str) -> Dict[str, str]:
     parts = (output or "").strip().split("\t")
     if len(parts) != 4:
-        raise OrcheError("Failed to parse tmux split-window output")
+        raise OrcheError("Failed to parse tmux pane output")
     return {
         "session_name": parts[0],
         "pane_id": parts[1],
@@ -1235,6 +1235,31 @@ def _pane_record_from_split_output(output: str) -> Dict[str, str]:
         "pane_current_path": "",
         "pane_title": "",
     }
+
+
+def create_dedicated_pane(session: str, cwd: Path) -> Dict[str, str]:
+    tmux_name = tmux_session_name(session)
+    if _tmux_has_session(tmux_name):
+        panes = list_panes(tmux_name)
+        if panes:
+            return panes[0]
+        raise OrcheError(f"Failed to create tmux pane for {session}")
+    result = tmux(
+        "new-session",
+        "-d",
+        "-s",
+        tmux_name,
+        "-n",
+        window_name(session),
+        "-c",
+        str(cwd),
+        "-P",
+        "-F",
+        "#{session_name}\t#{pane_id}\t#{window_id}\t#{window_name}",
+        check=True,
+        capture=True,
+    )
+    return _pane_record_from_tmux_output(result.stdout)
 
 
 def _preferred_host_pane(*, tmux_session: str, host_pane_id: str = "", exclude_pane_id: str = "") -> str:
@@ -1275,7 +1300,7 @@ def create_inline_pane(
         check=True,
         capture=True,
     )
-    return _pane_record_from_split_output(result.stdout), resolved_host_pane
+    return _pane_record_from_tmux_output(result.stdout), resolved_host_pane
 
 
 def normalize_pane(session: str, cwd: Path, pane: Dict[str, str]) -> str:
@@ -1337,11 +1362,7 @@ def ensure_pane(
                 host_pane_id=resolved_host_pane_id or _current_tmux_value("#{pane_id}"),
             )
         else:
-            tmux_name = ensure_tmux_session(session, cwd)
-            panes = list_panes(tmux_name)
-            if not panes:
-                raise OrcheError(f"Failed to create tmux pane for {session}")
-            pane = panes[0]
+            pane = create_dedicated_pane(session, cwd)
         pane_id = normalize_pane(session, cwd, pane)
         meta.update(
             {

@@ -4,7 +4,6 @@ import contextlib
 import json
 import re
 import shlex
-import shutil
 import time
 from pathlib import Path
 
@@ -127,15 +126,7 @@ def default_notify_hook_path(runtime_home: Path) -> Path:
 
 
 def default_settings_path(runtime_home: Path) -> Path:
-    return default_managed_source_home_path(runtime_home) / "settings.json"
-
-
-def default_managed_source_config_path(runtime_home: Path) -> Path:
-    return runtime_home / ".claude.json"
-
-
-def default_managed_source_home_path(runtime_home: Path) -> Path:
-    return runtime_home / ".claude"
+    return runtime_home / "settings.json"
 
 
 def claude_command_tokens() -> list[str]:
@@ -320,15 +311,6 @@ def build_settings_payload(
     return payload
 
 
-def copy_source_home_to_runtime(runtime_home: Path) -> None:
-    source_home = source_claude_home_path()
-    if not source_home.exists():
-        return
-    target_home = default_managed_source_home_path(runtime_home)
-    if target_home.exists():
-        shutil.rmtree(target_home, ignore_errors=True)
-    shutil.copytree(source_home, target_home, symlinks=True, ignore_dangling_symlinks=True)
-
 class ClaudeAgent(AgentPlugin):
     name = "claude"
     display_name = "Claude Code"
@@ -342,26 +324,21 @@ class ClaudeAgent(AgentPlugin):
         cwd: Path,
         discord_channel_id: str | None,
     ) -> AgentRuntime:
-        source_config_payload = sync_trust_to_source_config(cwd)
+        sync_trust_to_source_config(cwd)
         target = default_claude_home_path(session)
         target.mkdir(parents=True, exist_ok=True)
-        copy_source_home_to_runtime(target)
         write_notify_hook(default_notify_hook_path(target))
         runtime_settings_path = default_settings_path(target)
         settings_payload = build_settings_payload(
             target,
             session=session,
             discord_channel_id=discord_channel_id,
-            source_payload=_read_json_object(runtime_settings_path),
+            source_payload=_read_json_object(source_settings_path()),
         )
         serialized_settings = json.dumps(settings_payload, indent=2, ensure_ascii=False) + "\n"
         write_text_atomically(
             runtime_settings_path,
             serialized_settings,
-        )
-        write_text_atomically(
-            default_managed_source_config_path(target),
-            json.dumps(source_config_payload, indent=2, ensure_ascii=False) + "\n",
         )
         return AgentRuntime(home=str(target.resolve()), managed=True, label=self.runtime_label)
 
@@ -382,7 +359,6 @@ class ClaudeAgent(AgentPlugin):
         normalized_runtime_home = normalize_runtime_home(runtime.home)
         if normalized_runtime_home:
             prefix.append(f"mkdir -p {shlex.quote(normalized_runtime_home)}")
-            prefix.append(f"export HOME={shlex.quote(normalized_runtime_home)}")
         if session:
             prefix.append(f"export ORCHE_SESSION={shlex.quote(session)}")
         if discord_channel_id:

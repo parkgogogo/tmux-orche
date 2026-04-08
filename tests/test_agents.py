@@ -41,7 +41,6 @@ def test_ensure_managed_claude_home_writes_runtime_hooks(xdg_runtime, tmp_path, 
     )
     source_home = tmp_path / ".claude"
     source_home.mkdir()
-    (source_home / "session.json").write_text('{"ok":true}\n', encoding="utf-8")
 
     target = backend.ensure_managed_claude_home(
         "repo-claude-main",
@@ -49,12 +48,11 @@ def test_ensure_managed_claude_home_writes_runtime_hooks(xdg_runtime, tmp_path, 
         discord_channel_id="1234567890",
     )
 
-    settings_path = Path(target) / ".claude" / "settings.json"
+    settings_path = Path(target) / "settings.json"
     hook_path = Path(target) / "hooks" / "discord-turn-notify.sh"
     payload = json.loads(settings_path.read_text(encoding="utf-8"))
     command = payload["hooks"]["Stop"][0]["hooks"][0]["command"]
     source_payload = json.loads((tmp_path / ".claude.json").read_text(encoding="utf-8"))
-    mirrored_source_payload = json.loads((Path(target) / ".claude.json").read_text(encoding="utf-8"))
 
     assert hook_path.exists()
     assert "--session repo-claude-main" in command
@@ -64,8 +62,8 @@ def test_ensure_managed_claude_home_writes_runtime_hooks(xdg_runtime, tmp_path, 
     assert payload["hooks"]["Notification"][0]["hooks"][0]["command"].endswith("--channel-id 1234567890 --status warning")
     assert payload["hooks"]["PermissionRequest"][0]["hooks"][0]["command"].endswith("--channel-id 1234567890 --status warning")
     assert source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
-    assert mirrored_source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
-    assert (Path(target) / ".claude" / "session.json").read_text(encoding="utf-8") == '{"ok":true}\n'
+    assert not (Path(target) / ".claude.json").exists()
+    assert not (Path(target) / ".claude").exists()
 
 
 def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(xdg_runtime, tmp_path, monkeypatch):
@@ -79,7 +77,6 @@ def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(x
     )
     source_home = tmp_path / ".claude"
     source_home.mkdir()
-    (source_home / "state.json").write_text('{"theme":"dark"}\n', encoding="utf-8")
     (source_home / "settings.json").write_text(
         json.dumps(
             {
@@ -136,8 +133,7 @@ def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(x
         discord_channel_id=None,
     )
 
-    settings_payload = json.loads((Path(target) / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    mirrored_source_payload = json.loads((Path(target) / ".claude.json").read_text(encoding="utf-8"))
+    settings_payload = json.loads((Path(target) / "settings.json").read_text(encoding="utf-8"))
 
     assert settings_payload["numStartups"] == 12
     assert settings_payload["theme"] == "dark-dimmed"
@@ -145,9 +141,8 @@ def test_ensure_managed_claude_home_copies_source_config_into_runtime_settings(x
     assert "--session repo-claude-main" in settings_payload["hooks"]["SessionStart"][1]["hooks"][0]["command"]
     assert settings_payload["hooks"]["Stop"][0]["hooks"][0]["command"] == "/bin/echo existing-stop-hook"
     assert "--session repo-claude-main" in settings_payload["hooks"]["Stop"][1]["hooks"][0]["command"]
-    assert mirrored_source_payload["projects"][str(tmp_path.resolve())]["allowedTools"] == ["Bash(git status:*)"]
-    assert mirrored_source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
-    assert (Path(target) / ".claude" / "state.json").read_text(encoding="utf-8") == '{"theme":"dark"}\n'
+    assert not (Path(target) / ".claude.json").exists()
+    assert not (Path(target) / ".claude").exists()
 
 
 def test_ensure_managed_codex_home_disables_update_checks_without_mutating_source_setting(xdg_runtime, tmp_path, monkeypatch):
@@ -302,17 +297,14 @@ def test_ensure_managed_claude_home_uses_configured_source_config_path(xdg_runti
 
     assert Path(target).exists()
     source_payload = json.loads(configured_path.read_text(encoding="utf-8"))
-    settings_payload = json.loads((Path(target) / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    mirrored_source_payload = json.loads((Path(target) / ".claude.json").read_text(encoding="utf-8"))
+    settings_payload = json.loads((Path(target) / "settings.json").read_text(encoding="utf-8"))
     assert source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
-    assert mirrored_source_payload["projects"][str(tmp_path.resolve())]["hasTrustDialogAccepted"] is True
     assert "--session repo-claude-main" in settings_payload["hooks"]["Stop"][0]["hooks"][0]["command"]
 
 
 def test_ensure_managed_claude_home_uses_configured_source_home_path(xdg_runtime, tmp_path, monkeypatch):
     configured_home = tmp_path / "homes" / "claude-custom-home"
     configured_home.mkdir(parents=True)
-    (configured_home / "workspace.json").write_text('{"source":"configured-home"}\n', encoding="utf-8")
     (configured_home / "settings.json").write_text('{"theme":"configured-home"}\n', encoding="utf-8")
     backend.save_config(
         {
@@ -329,8 +321,8 @@ def test_ensure_managed_claude_home_uses_configured_source_home_path(xdg_runtime
         discord_channel_id=None,
     )
 
-    assert (Path(target) / ".claude" / "workspace.json").read_text(encoding="utf-8") == '{"source":"configured-home"}\n'
-    settings_payload = json.loads((Path(target) / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert not (Path(target) / "workspace.json").exists()
+    settings_payload = json.loads((Path(target) / "settings.json").read_text(encoding="utf-8"))
     assert settings_payload["theme"] == "configured-home"
 
 
@@ -490,7 +482,7 @@ def test_get_agent_applies_configured_claude_home_and_config_paths(xdg_runtime):
     assert backend.claude_agent_module.DEFAULT_CLAUDE_SOURCE_CONFIG_PATH == Path("/opt/tools/claude.json")
 
 
-def test_claude_managed_launch_command_exports_home_and_uses_runtime_settings(xdg_runtime, tmp_path):
+def test_claude_managed_launch_command_uses_runtime_settings_without_overriding_home(xdg_runtime, tmp_path):
     backend.save_config(
         {
             "_comment": "runtime",
@@ -508,9 +500,9 @@ def test_claude_managed_launch_command_exports_home_and_uses_runtime_settings(xd
         approve_all=True,
     )
 
-    assert f"export HOME={tmp_path / 'managed-home'}" in launch_command
+    assert f"export HOME={tmp_path / 'managed-home'}" not in launch_command
     assert "--setting-sources user" in launch_command
-    assert f"--settings {tmp_path / 'managed-home' / '.claude' / 'settings.json'}" in launch_command
+    assert f"--settings {tmp_path / 'managed-home' / 'settings.json'}" in launch_command
     assert "exec /opt/tools/claude-wrapper --dangerously-skip-permissions" in launch_command
 
 

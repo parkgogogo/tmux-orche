@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import time
 from pathlib import Path
 
 import subprocess
@@ -509,6 +510,58 @@ def test_close_session_kills_inline_pane_without_killing_tmux_session(xdg_runtim
     assert not any(call[:2] == ("kill-session", "-t") for call in calls)
 
 
+def test_close_session_closes_child_sessions_recursively(xdg_runtime, monkeypatch):
+    backend.save_meta(
+        "parent",
+        {
+            "session": "parent",
+            "agent": "codex",
+            "pane_id": "%1",
+            "tmux_session": backend.tmux_session_name("parent"),
+            "tmux_mode": "dedicated-session",
+        },
+    )
+    backend.save_meta(
+        "child",
+        {
+            "session": "child",
+            "agent": "codex",
+            "pane_id": "%2",
+            "tmux_session": backend.tmux_session_name("parent"),
+            "tmux_mode": "inline-pane",
+            "parent_session": "parent",
+        },
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def fake_tmux(*args, **kwargs):
+        calls.append(tuple(args))
+        if list(args) == ["has-session", "-t", backend.tmux_session_name("parent")]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        if list(args[:4]) == ["list-clients", "-t", backend.tmux_session_name("parent"), "-F"]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "/dev/ttys001\n", "")
+        if list(args[:2]) in (["detach-client", "-t"], ["kill-session", "-t"], ["kill-pane", "-t"]):
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        return subprocess.CompletedProcess(["tmux", *args], 1, "", "")
+
+    monkeypatch.setattr(backend, "bridge_resolve", lambda session: {"parent": "%1", "child": "%2"}.get(session, ""))
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id in {"%1", "%2"})
+    monkeypatch.setattr(
+        backend,
+        "get_pane_info",
+        lambda pane_id: {"session_name": backend.tmux_session_name("parent")} if pane_id in {"%1", "%2"} else None,
+    )
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    pane_id = backend.close_session("parent")
+
+    assert pane_id == "%1"
+    assert ("kill-pane", "-t", "%2") in calls
+    assert ("kill-session", "-t", backend.tmux_session_name("parent")) in calls
+    assert backend.load_meta("parent") == {}
+    assert backend.load_meta("child") == {}
+
+
 def test_config_supports_discord_mention_user_id(xdg_runtime):
     runner = CliRunner()
 
@@ -523,6 +576,29 @@ def test_config_supports_discord_mention_user_id(xdg_runtime):
     assert list_result.exit_code == 0
     assert "discord.mention-user-id" in list_result.stdout
     assert "123456" in list_result.stdout
+
+
+def test_config_supports_managed_ttl_seconds(xdg_runtime):
+    runner = CliRunner()
+
+    set_result = runner.invoke(app, ["config", "set", "managed.ttl-seconds", "1800"])
+    get_result = runner.invoke(app, ["config", "get", "managed.ttl-seconds"])
+    list_result = runner.invoke(app, ["config", "list"])
+
+    assert set_result.exit_code == 0
+    assert set_result.stdout.strip() == "1800"
+    assert get_result.exit_code == 0
+    assert get_result.stdout.strip() == "1800"
+    assert list_result.exit_code == 0
+    assert "managed.ttl-seconds" in list_result.stdout
+    assert "1800" in list_result.stdout
+
+
+def test_config_rejects_non_integer_managed_ttl_seconds(xdg_runtime):
+    result = CliRunner().invoke(app, ["config", "set", "managed.ttl-seconds", "soon"])
+
+    assert result.exit_code == 1
+    assert "managed.ttl-seconds must be an integer number of seconds" in result.output
 
 
 def test_config_supports_claude_command_home_and_config_paths(xdg_runtime):
@@ -623,6 +699,175 @@ def test_build_status_uses_session_metadata_discord_session(xdg_runtime, monkeyp
     status = backend.build_status("demo-session")
 
     assert status["discord_session"] == "agent:main:discord:channel:1111111111"
+
+
+def test_build_status_includes_lifecycle_metadata(xdg_runtime, monkeypatch):
+    now = time.time()
+    backend.save_meta(
+        "parent",
+        {
+            "session": "parent",
+            "cwd": "/repo/parent",
+            "agent": "codex",
+            "pane_id": "%1",
+            "launch_mode": "managed",
+            "last_event_at": now,
+            "expires_after_seconds": 3600,
+        },
+    )
+    backend.save_meta(
+        "child",
+        {
+            "session": "child",
+            "cwd": "/repo/child",
+            "agent": "codex",
+            "pane_id": "%2",
+            "launch_mode": "managed",
+            "parent_session": "parent",
+            "last_event_at": now - 30,
+            "expires_after_seconds": 3600,
+        },
+    )
+    monkeypatch.setattr(backend, "bridge_resolve", lambda session: {"parent": "%1", "child": "%2"}.get(session, ""))
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id in {"%1", "%2"})
+    monkeypatch.setattr(backend, "is_agent_running", lambda plugin, pane_id: pane_id in {"%1", "%2"})
+    monkeypatch.setattr(
+        backend,
+        "get_pane_info",
+        lambda pane_id: {"session_name": "orche-parent", "window_name": "main"} if pane_id in {"%1", "%2"} else None,
+    )
+
+    status = backend.build_status("child")
+
+    assert status["parent_session"] == "parent"
+    assert status["child_count"] == 0
+    assert status["ttl_seconds"] == 3600
+    assert status["ttl_exempt_because_parent_alive"] is True
+    assert status["last_event_at"] == now - 30
+
+
+def test_expire_managed_sessions_closes_stale_roots_and_preserves_native(xdg_runtime, monkeypatch):
+    now = time.time()
+    backend.save_config({"_comment": "runtime", "managed_session_ttl_seconds": 60})
+    backend.save_meta(
+        "managed-stale",
+        {
+            "session": "managed-stale",
+            "agent": "codex",
+            "pane_id": "%1",
+            "launch_mode": "managed",
+            "tmux_session": backend.tmux_session_name("managed-stale"),
+            "last_event_at": now - 120,
+            "expires_after_seconds": 60,
+        },
+    )
+    backend.save_meta(
+        "native-stale",
+        {
+            "session": "native-stale",
+            "agent": "codex",
+            "pane_id": "%2",
+            "launch_mode": "native",
+            "tmux_session": backend.tmux_session_name("native-stale"),
+            "last_event_at": now - 120,
+            "expires_after_seconds": 60,
+        },
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def fake_tmux(*args, **kwargs):
+        calls.append(tuple(args))
+        if list(args[:2]) in (["kill-session", "-t"], ["detach-client", "-t"]):
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        if list(args[:4]) == ["list-clients", "-t", backend.tmux_session_name("managed-stale"), "-F"]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        if list(args) == ["has-session", "-t", backend.tmux_session_name("managed-stale")]:
+            return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+        return subprocess.CompletedProcess(["tmux", *args], 1, "", "")
+
+    monkeypatch.setattr(backend, "bridge_resolve", lambda session: {"managed-stale": "%1", "native-stale": "%2"}.get(session, ""))
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id in {"%1", "%2"})
+    monkeypatch.setattr(
+        backend,
+        "get_pane_info",
+        lambda pane_id: {"session_name": backend.tmux_session_name("managed-stale")} if pane_id == "%1" else {"session_name": backend.tmux_session_name("native-stale")} if pane_id == "%2" else None,
+    )
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    expired = backend.expire_managed_sessions(now=now)
+
+    assert expired == ["managed-stale"]
+    assert backend.load_meta("managed-stale") == {}
+    assert backend.load_meta("native-stale")["launch_mode"] == "native"
+    assert ("kill-session", "-t", backend.tmux_session_name("managed-stale")) in calls
+
+
+def test_expire_managed_sessions_skips_child_while_parent_alive(xdg_runtime, monkeypatch):
+    now = time.time()
+    backend.save_config({"_comment": "runtime", "managed_session_ttl_seconds": 60})
+    backend.save_meta(
+        "parent",
+        {
+            "session": "parent",
+            "agent": "codex",
+            "pane_id": "%1",
+            "launch_mode": "managed",
+            "tmux_session": backend.tmux_session_name("parent"),
+            "last_event_at": now,
+            "expires_after_seconds": 60,
+        },
+    )
+    backend.save_meta(
+        "child",
+        {
+            "session": "child",
+            "agent": "codex",
+            "pane_id": "%2",
+            "launch_mode": "managed",
+            "tmux_mode": "inline-pane",
+            "parent_session": "parent",
+            "last_event_at": now - 600,
+            "expires_after_seconds": 60,
+        },
+    )
+
+    monkeypatch.setattr(backend, "bridge_resolve", lambda session: {"parent": "%1", "child": "%2"}.get(session, ""))
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id in {"%1", "%2"})
+    monkeypatch.setattr(
+        backend,
+        "get_pane_info",
+        lambda pane_id: {"session_name": backend.tmux_session_name("parent")} if pane_id in {"%1", "%2"} else None,
+    )
+
+    expired = backend.expire_managed_sessions(now=now)
+
+    assert expired == []
+    assert backend.load_meta("child")["parent_session"] == "parent"
+
+
+def test_open_auto_names_inline_child_sessions_from_parent(xdg_runtime, monkeypatch, tmp_path):
+    captured: dict[str, str] = {}
+
+    monkeypatch.setattr(cli, "current_session_id", lambda: "parent-main")
+    monkeypatch.setattr(cli, "session_exists", lambda session: False)
+    def fake_ensure_session(session, cwd, agent, notify_to=None, notify_target=None):
+        captured["session"] = session
+        return "%9"
+
+    monkeypatch.setattr(cli, "ensure_session", fake_ensure_session)
+    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
+
+    session, pane_id = cli._open_session(
+        cwd=tmp_path,
+        agent="codex",
+        name=None,
+        notify="tmux:parent-main",
+        cli_args=[],
+    )
+
+    assert pane_id == "%9"
+    assert session == captured["session"]
+    assert session.startswith(f"{backend.repo_name(tmp_path)}-codex-parent-main-")
 
 
 def test_version_works_without_subcommand(xdg_runtime):

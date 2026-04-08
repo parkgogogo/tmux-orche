@@ -48,6 +48,7 @@ LATEST_TURN_SUMMARY_RETRY_INTERVAL = 0.25
 WATCHDOG_NOTIFY_BUFFER = 10.0
 TMUX_PANE_OUTPUT_SEPARATOR = "@@ORCHE_PANE@@"
 LAUNCH_ERROR_PREFIX = "orche launch error:"
+DEFAULT_MANAGED_SESSION_TTL_SECONDS = 3600
 CONFIG_COMMENT = (
     "orche runtime config. session is the active orche agent session label; "
     "discord_session is the Discord/OpenClaw session key used for notify routing."
@@ -65,6 +66,7 @@ CONFIG_KEY_MAP = {
     "discord.bot-token": "discord_bot_token",
     "discord.mention-user-id": "notify_mention_user_id",
     "discord.webhook-url": "discord_webhook_url",
+    "managed.ttl-seconds": "managed_session_ttl_seconds",
     "notify.enabled": "notify_enabled",
 }
 
@@ -717,6 +719,97 @@ def load_meta(session: str) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _iter_meta_payloads() -> Iterable[Dict[str, Any]]:
+    ensure_directories()
+    for path in sorted(meta_dir().glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        session = str(payload.get("session") or path.stem).strip()
+        if not session:
+            continue
+        payload["session"] = session
+        yield payload
+
+
+def managed_session_ttl_seconds(config: Optional[Mapping[str, Any]] = None) -> int:
+    payload = dict(config or load_config())
+    raw = payload.get("managed_session_ttl_seconds", DEFAULT_MANAGED_SESSION_TTL_SECONDS)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MANAGED_SESSION_TTL_SECONDS
+
+
+def session_parent(meta: Mapping[str, Any]) -> str:
+    return str(meta.get("parent_session") or "").strip()
+
+
+def session_children(session: str, *, live_only: bool = False) -> List[str]:
+    target = str(session or "").strip()
+    if not target:
+        return []
+    children: List[str] = []
+    for payload in _iter_meta_payloads():
+        child_session = str(payload.get("session") or "").strip()
+        if not child_session:
+            continue
+        if session_parent(payload) != target:
+            continue
+        if live_only and not session_metadata_is_live(child_session, payload):
+            continue
+        children.append(child_session)
+    return sorted(dict.fromkeys(children))
+
+
+def managed_session_last_event_at(meta: Mapping[str, Any], *, default: float = 0.0) -> float:
+    for value in (
+        meta.get("last_event_at"),
+        meta.get("updated_at"),
+        meta.get("last_seen_at"),
+    ):
+        try:
+            numeric = float(value or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if numeric > 0.0:
+            return numeric
+    return default
+
+
+def touch_session_event(session: str, *, source: str = "") -> Dict[str, Any]:
+    session_name = str(session or "").strip()
+    if not session_name:
+        return {}
+    with session_lock(session_name):
+        meta = load_meta(session_name)
+        if not meta or session_launch_mode(meta) != "managed":
+            return {}
+        timestamp = time.time()
+        meta["last_event_at"] = timestamp
+        meta["last_event_source"] = str(source or "").strip()
+        meta["expires_after_seconds"] = managed_session_ttl_seconds()
+        save_meta(session_name, meta)
+        return {
+            "last_event_at": timestamp,
+            "last_event_source": meta["last_event_source"],
+            "expires_after_seconds": meta["expires_after_seconds"],
+        }
+
+
+def _session_has_live_parent(meta: Mapping[str, Any]) -> bool:
+    parent = session_parent(meta)
+    if not parent:
+        return False
+    parent_meta = load_meta(parent)
+    if not parent_meta:
+        return False
+    return session_metadata_is_live(parent, parent_meta)
+
+
 def validate_discord_channel_id(value: str, *, option_name: str = "--channel-id") -> str:
     try:
         return common_validate_discord_channel_id(value)
@@ -831,19 +924,11 @@ def load_history_entries(session: str) -> List[Dict[str, Any]]:
 
 
 def list_sessions() -> List[Dict[str, Any]]:
+    expire_managed_sessions()
     ensure_directories()
     sessions: List[Dict[str, Any]] = []
-    for path in sorted(meta_dir().glob("*.json")):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        session = str(payload.get("session") or path.stem).strip()
-        if not session:
-            continue
-        payload["session"] = session
+    for payload in _iter_meta_payloads():
+        session = str(payload.get("session") or "").strip()
         if not session_metadata_is_live(session, payload):
             remove_meta(session)
             continue
@@ -886,6 +971,41 @@ def session_metadata_is_live(session: str, meta: Optional[Mapping[str, Any]] = N
     return bool(target_tmux_session and _tmux_has_session(target_tmux_session))
 
 
+def _managed_session_expires_at(meta: Mapping[str, Any]) -> float:
+    ttl = int(meta.get("expires_after_seconds") or managed_session_ttl_seconds())
+    if ttl <= 0:
+        return 0.0
+    last_event_at = managed_session_last_event_at(meta)
+    if last_event_at <= 0.0:
+        return 0.0
+    return last_event_at + ttl
+
+
+def expire_managed_sessions(*, now: Optional[float] = None) -> List[str]:
+    timestamp = time.time() if now is None else now
+    ttl = managed_session_ttl_seconds()
+    if ttl <= 0:
+        return []
+    expired_roots: List[str] = []
+    for payload in _iter_meta_payloads():
+        session = str(payload.get("session") or "").strip()
+        if not session or session_launch_mode(payload) != "managed":
+            continue
+        if not session_metadata_is_live(session, payload):
+            remove_meta(session)
+            continue
+        if _session_has_live_parent(payload):
+            continue
+        expires_at = _managed_session_expires_at(payload)
+        if expires_at > 0.0 and expires_at <= timestamp:
+            expired_roots.append(session)
+    closed: List[str] = []
+    for session in sorted(dict.fromkeys(expired_roots)):
+        close_session_tree(session, reason="ttl-expired")
+        closed.append(session)
+    return closed
+
+
 def _current_tmux_value(fmt: str) -> str:
     result = tmux("display-message", "-p", fmt, check=False, capture=True)
     if result.returncode != 0:
@@ -905,6 +1025,7 @@ def load_config() -> Dict[str, Any]:
         "discord_channel_id": "",
         "discord_webhook_url": "",
         "notify_enabled": True,
+        "managed_session_ttl_seconds": DEFAULT_MANAGED_SESSION_TTL_SECONDS,
         "session": "",
         "discord_session": "",
         "runtime_home": "",
@@ -967,6 +1088,11 @@ def set_config_value(key: str, value: str) -> Dict[str, Any]:
             normalized = False
         else:
             raise OrcheError("notify.enabled must be one of: true, false, 1, 0, yes, no, on, off")
+    elif key == "managed.ttl-seconds":
+        try:
+            normalized = int(value.strip())
+        except ValueError as exc:
+            raise OrcheError("managed.ttl-seconds must be an integer number of seconds") from exc
     else:
         normalized = value.strip()
     config[field] = normalized
@@ -1666,6 +1792,8 @@ def append_action_history(session: str, cwd: Path, agent: str, action: str, **fi
             **fields,
         },
     )
+    if action != "close":
+        touch_session_event(session, source=f"action:{action}")
 
 
 def ensure_managed_codex_home(session: str, *, cwd: Path, discord_channel_id: Optional[str]) -> Path:
@@ -1845,6 +1973,10 @@ def ensure_native_session(
             "runtime_label": "",
             "codex_home": "",
             "codex_home_managed": False,
+            "parent_session": "",
+            "last_event_at": 0.0,
+            "last_event_source": "",
+            "expires_after_seconds": 0,
         }
     )
     meta.pop("discord_channel_id", None)
@@ -1917,7 +2049,8 @@ def initialize_session_startup(
         }
         meta["startup"] = startup
         save_meta(session, meta)
-        return dict(startup)
+    touch_session_event(session, source=f"startup:{state}")
+    return dict(startup)
 
 
 def mark_session_startup_ready(session: str, *, source: str) -> Dict[str, Any]:
@@ -1940,7 +2073,8 @@ def mark_session_startup_ready(session: str, *, source: str) -> Dict[str, Any]:
             startup["started_at"] = timestamp
         meta["startup"] = startup
         save_meta(session, meta)
-        return dict(startup)
+    touch_session_event(session, source=f"startup:ready:{source}")
+    return dict(startup)
 
 
 def mark_session_startup_timeout(session: str, *, reason: str = "") -> Dict[str, Any]:
@@ -1959,7 +2093,8 @@ def mark_session_startup_timeout(session: str, *, reason: str = "") -> Dict[str,
             startup["started_at"] = timestamp
         meta["startup"] = startup
         save_meta(session, meta)
-        return dict(startup)
+    touch_session_event(session, source="startup:timeout")
+    return dict(startup)
 
 
 def mark_session_startup_blocked(
@@ -1995,7 +2130,8 @@ def mark_session_startup_blocked(
             startup["started_at"] = timestamp
         meta["startup"] = startup
         save_meta(session, meta)
-        return dict(startup), changed
+    touch_session_event(session, source=f"startup:blocked:{blocked_event or 'unknown'}")
+    return dict(startup), changed
 
 
 def mark_pending_turn_prompt_accepted(session: str, *, source: str = "user-prompt-submit") -> Dict[str, Any]:
@@ -2016,7 +2152,8 @@ def mark_pending_turn_prompt_accepted(session: str, *, source: str = "user-promp
         pending_turn["prompt_ack"] = prompt_ack
         meta["pending_turn"] = pending_turn
         save_meta(session, meta)
-        return dict(prompt_ack)
+    touch_session_event(session, source=f"prompt-ack:{source}")
+    return dict(prompt_ack)
 
 
 def claim_turn_notification(
@@ -2058,7 +2195,8 @@ def claim_turn_notification(
         turn["notifications"] = notifications
         meta[turn_key] = turn
         save_meta(session, meta)
-        return True
+    touch_session_event(session, source=f"notify-claim:{normalized_event}")
+    return True
 
 
 def release_turn_notification(
@@ -2090,6 +2228,7 @@ def release_turn_notification(
         turn["notifications"] = notifications
         meta[turn_key] = turn
         save_meta(session, meta)
+    touch_session_event(session, source=f"notify-release:{normalized_event}")
 
 
 def update_watchdog_metadata(
@@ -2110,7 +2249,8 @@ def update_watchdog_metadata(
         pending_turn["watchdog"] = watchdog
         meta["pending_turn"] = pending_turn
         save_meta(session, meta)
-        return dict(watchdog)
+    touch_session_event(session, source="watchdog")
+    return dict(watchdog)
 
 
 def _orche_bootstrap_command() -> List[str]:
@@ -2165,6 +2305,7 @@ def emit_internal_notify(
             detail=shorten((result.stderr or result.stdout or "").strip(), 400),
         )
         return False
+    touch_session_event(session, source=f"notify:{event}")
     return True
 
 
@@ -2407,6 +2548,7 @@ def complete_pending_turn(
         meta["last_completed_turn"] = completed
         meta.pop("pending_turn", None)
         save_meta(session, meta)
+    touch_session_event(session, source="turn-complete")
     if pid > 0 and process_is_alive(pid):
         with contextlib.suppress(OSError):
             os.kill(pid, signal.SIGTERM)
@@ -2705,6 +2847,9 @@ def ensure_session(
         tmux_mode = "inline-pane" if use_inline_pane else "dedicated-session"
     elif not tmux_mode:
         tmux_mode = "dedicated-session"
+    parent_session = ""
+    if tmux_mode == "inline-pane" and str(resolved_notify_binding.get("provider") or "").strip() == "tmux-bridge":
+        parent_session = str(resolved_notify_binding.get("target") or "").strip()
     pane_id = ensure_pane(
         session,
         cwd,
@@ -2726,6 +2871,10 @@ def ensure_session(
             "host_pane_id": host_pane_id,
             "tmux_host_session": tmux_host_session,
             "last_seen_at": time.time(),
+            "parent_session": parent_session,
+            "last_event_at": time.time(),
+            "last_event_source": "open",
+            "expires_after_seconds": managed_session_ttl_seconds(),
         }
     )
     apply_runtime_to_meta(meta, agent=agent, runtime=runtime)
@@ -2762,6 +2911,10 @@ def ensure_session(
             "host_pane_id": host_pane_id,
             "tmux_host_session": tmux_host_session,
             "last_seen_at": time.time(),
+            "parent_session": parent_session,
+            "last_event_at": time.time(),
+            "last_event_source": "open",
+            "expires_after_seconds": managed_session_ttl_seconds(),
         }
     )
     apply_runtime_to_meta(meta, agent=agent, runtime=runtime)
@@ -2774,6 +2927,7 @@ def ensure_session(
     else:
         meta.pop("notify_binding", None)
     save_meta(session, meta)
+    touch_session_event(session, source="open")
     if runtime.managed and plugin.name in {"claude", "codex"}:
         wait_for_managed_startup_ready(session, plugin, pane_id, cwd)
     elif plugin.name == "claude":
@@ -2840,6 +2994,7 @@ def send_prompt(
         },
     }
     save_meta(session, meta)
+    touch_session_event(session, source="prompt-submit")
     plugin.submit_prompt(session, prompt, bridge=BRIDGE)
     try:
         start_session_watchdog(session, turn_id=turn_id)
@@ -2884,6 +3039,8 @@ def latest_turn_summary(session: str) -> str:
 
 def build_status(session: str) -> Dict[str, Any]:
     meta = load_meta(session)
+    if not meta:
+        raise OrcheError(f"Unknown session: {session}")
     pane_id = bridge_resolve(session) or str(meta.get("pane_id") or "")
     info = get_pane_info(pane_id) if pane_id else None
     resolved_tmux_session = str((info or {}).get("session_name") or meta.get("tmux_session") or "").strip()
@@ -2899,6 +3056,10 @@ def build_status(session: str) -> Dict[str, Any]:
     watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
     startup = meta.get("startup") if isinstance(meta.get("startup"), dict) else {}
     prompt_ack = pending_turn.get("prompt_ack") if isinstance(pending_turn.get("prompt_ack"), dict) else {}
+    parent_session = session_parent(meta)
+    child_count = len(session_children(session, live_only=True))
+    ttl_seconds = int(meta.get("expires_after_seconds") or managed_session_ttl_seconds())
+    last_event_at = managed_session_last_event_at(meta)
     return {
         "backend": BACKEND,
         "session": session,
@@ -2917,6 +3078,11 @@ def build_status(session: str) -> Dict[str, Any]:
         "pane_exists": bool(pane_id and pane_exists(pane_id)),
         "discord_session": discord_session,
         "notify_binding": notify_binding,
+        "parent_session": parent_session,
+        "child_count": child_count,
+        "last_event_at": last_event_at,
+        "ttl_seconds": ttl_seconds,
+        "ttl_exempt_because_parent_alive": bool(parent_session and _session_has_live_parent(meta)),
         "pending_turn_id": str(pending_turn.get("turn_id") or ""),
         "pending_turn_submitted_at": float(pending_turn.get("submitted_at") or 0.0),
         "startup": dict(startup),
@@ -2980,8 +3146,10 @@ def cancel_session(session: str) -> str:
     return bridge_resolve(session) or "-"
 
 
-def close_session(session: str) -> str:
+def _close_session_single(session: str) -> str:
     meta = load_meta(session)
+    if not meta:
+        return "-"
     agent = str(meta.get("agent") or "codex")
     plugin = get_agent(agent)
     pane_id = bridge_resolve(session) or str(meta.get("pane_id") or "")
@@ -3025,3 +3193,22 @@ def close_session(session: str) -> str:
         save_config(config)
     remove_meta(session)
     return pane_id or "-"
+
+
+def close_session_tree(session: str, *, reason: str = "", _visited: Optional[Set[str]] = None) -> str:
+    session_name = str(session or "").strip()
+    if not session_name:
+        return "-"
+    visited = _visited if _visited is not None else set()
+    if session_name in visited:
+        return "-"
+    visited.add(session_name)
+    root_pane = bridge_resolve(session_name) or str(load_meta(session_name).get("pane_id") or "") or "-"
+    for child in session_children(session_name):
+        close_session_tree(child, reason=reason, _visited=visited)
+    _close_session_single(session_name)
+    return root_pane
+
+
+def close_session(session: str) -> str:
+    return close_session_tree(session)

@@ -7,6 +7,7 @@ import re
 import secrets
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -33,6 +34,7 @@ from backend import (
     complete_pending_turn,
     current_session_id,
     default_session_name,
+    expire_managed_sessions,
     ensure_native_session,
     ensure_session,
     get_config_value,
@@ -255,6 +257,26 @@ def _shortcut_session_name(cwd: Path, agent: str) -> str:
     return default_session_name(cwd.resolve(), agent, secrets.token_hex(3))
 
 
+def _inline_parent_session_name(notify: Optional[str]) -> str:
+    provider, target = _parse_notify_binding(notify)
+    if provider != "tmux-bridge" or not target:
+        return ""
+    try:
+        current = current_session_id()
+    except OrcheError:
+        return ""
+    return target if current and target == current else ""
+
+
+def _associated_session_name(name: Optional[str], cwd: Path, agent: str, notify: Optional[str]) -> str:
+    if name:
+        return name
+    parent_session = _inline_parent_session_name(notify)
+    if not parent_session:
+        return default_session_name(cwd.resolve(), agent, secrets.token_hex(3))
+    return default_session_name(cwd.resolve(), agent, f"{parent_session}-{secrets.token_hex(3)}")
+
+
 def _default_cwd() -> Path:
     return Path.cwd().resolve()
 
@@ -345,6 +367,22 @@ def _render_status(info: dict) -> None:
     body.append("yes\n" if info.get("pane_exists") else "no\n")
     body.append("CWD: ", style="bold cyan")
     body.append(f"{info.get('cwd', '-')}")
+    if info.get("parent_session"):
+        body.append("\nParent: ", style="bold cyan")
+        body.append(str(info.get("parent_session") or "-"))
+    if int(info.get("child_count") or 0) > 0:
+        body.append("\nChildren: ", style="bold cyan")
+        body.append(str(info.get("child_count") or 0))
+    ttl_seconds = int(info.get("ttl_seconds") or 0)
+    if ttl_seconds > 0:
+        body.append("\nTTL: ", style="bold cyan")
+        body.append(f"{ttl_seconds}s")
+        if info.get("ttl_exempt_because_parent_alive"):
+            body.append(" (parent alive)")
+    last_event_at = float(info.get("last_event_at") or 0.0)
+    if last_event_at > 0.0:
+        body.append("\nLast event: ", style="bold cyan")
+        body.append(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_event_at)))
     notify_binding = info.get("notify_binding")
     if isinstance(notify_binding, dict) and notify_binding:
         body.append("\nNotify: ", style="bold cyan")
@@ -411,7 +449,7 @@ def _open_session(
     notify: Optional[str],
     cli_args: list[str],
 ) -> tuple[str, str]:
-    session = _session_name(name, cwd, agent)
+    session = _associated_session_name(name, cwd, agent, notify)
     if session_exists(session):
         raise OrcheError(
             f"Session {session} already exists. Use 'orche attach {session}' or choose a different --name."
@@ -470,6 +508,8 @@ def main_callback(
 ) -> None:
     _configure_output_streams()
     ensure_directories()
+    if ctx.invoked_subcommand not in {"notify-internal", "_notify-discord", "watchdog-loop-internal"}:
+        expire_managed_sessions()
     if version:
         console.print(f"orche {__version__}")
         raise typer.Exit()

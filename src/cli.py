@@ -43,6 +43,9 @@ from backend import (
     latest_turn_summary,
     log_event,
     log_exception,
+    mark_pending_turn_prompt_accepted,
+    mark_session_startup_blocked,
+    mark_session_startup_ready,
     release_turn_notification,
     resolve_session_context,
     run_session_watchdog,
@@ -53,6 +56,7 @@ from backend import (
 )
 from notify import (
     NotificationService,
+    NotifyEvent,
     ResolvedRoute,
     build_message_from_payload,
     dispatch_event,
@@ -348,11 +352,55 @@ def _render_status(info: dict) -> None:
     if info.get("pending_turn_id"):
         body.append("\nPending turn: ", style="bold cyan")
         body.append(str(info["pending_turn_id"]))
+    startup = info.get("startup")
+    if isinstance(startup, dict) and startup:
+        body.append("\nStartup: ", style="bold cyan")
+        body.append(str(startup.get("state") or "-"))
+        if startup.get("blocked_reason"):
+            body.append(f" ({startup.get('blocked_reason')})")
+    prompt_ack = info.get("prompt_ack")
+    if isinstance(prompt_ack, dict) and prompt_ack:
+        body.append("\nPrompt ack: ", style="bold cyan")
+        body.append(str(prompt_ack.get("state") or "-"))
     watchdog = info.get("watchdog")
     if isinstance(watchdog, dict) and watchdog:
         body.append("\nWatchdog: ", style="bold cyan")
         body.append(str(watchdog.get("state") or "-"))
     console.print(Panel.fit(body, title="orche status", border_style="blue"))
+
+
+def _apply_internal_notify_event(event: NotifyEvent) -> tuple[bool, Optional[NotifyEvent]]:
+    if event.event == "session-start":
+        mark_session_startup_ready(event.session, source="session-start")
+        console.print("notify ok: internal event=session-start detail=startup-ready")
+        return True, None
+    if event.event == "prompt-accepted":
+        prompt_ack = mark_pending_turn_prompt_accepted(event.session, source="user-prompt-submit")
+        detail = "pending-turn-updated" if prompt_ack else "no-pending-turn"
+        console.print(f"notify ok: internal event=prompt-accepted detail={detail}")
+        return True, None
+    if event.event not in {"notification", "permission-request"}:
+        return False, event
+    reason = str(event.summary or "").strip()
+    if not reason:
+        reason = "Claude requested permission" if event.event == "permission-request" else "Claude sent a notification"
+    startup, changed = mark_session_startup_blocked(
+        event.session,
+        reason=reason,
+        event_name=event.event,
+    )
+    if not changed:
+        detail = str(startup.get("state") or "ignored")
+        console.print(f"notify ok: internal event={event.event} detail={detail}")
+        return True, None
+    return False, NotifyEvent(
+        event="startup-blocked",
+        summary=reason,
+        session=event.session,
+        cwd=event.cwd,
+        status="warning",
+        metadata={**dict(event.metadata), "source": "startup"},
+    )
 
 
 def _open_session(
@@ -753,6 +801,11 @@ def notify_internal_command(
             explicit_channel_id=resolved_channel_id,
             status=status,
         )
+        handled, replacement_event = _apply_internal_notify_event(event) if event is not None else (False, event)
+        if handled:
+            return
+        if replacement_event is not None:
+            event = replacement_event
         routes = []
         if event is not None:
             routes = list(

@@ -420,6 +420,7 @@ orche config set claude.config-path ~/custom/claude.json
 
 - `claude.home-path` 和 `claude.config-path` 会一起决定 `orche` 向 managed Claude session 镜像哪一份 Claude source state。
 - 修改这几个键后，新创建的 Claude session 会立即使用新的配置。
+- managed Codex runtime 仍然使用隔离的 `CODEX_HOME`；`orche` 也会在这份隔离配置里写入 `check_for_update_on_startup = false` 和 `[notice].hide_rate_limit_model_nudge = true`，避免启动时的自动更新检查和模型切换提醒干扰托管 session。
 
 ## 前置条件
 

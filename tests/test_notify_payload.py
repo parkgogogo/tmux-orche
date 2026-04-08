@@ -118,6 +118,46 @@ def test_build_message_from_payload_skips_unsupported_event():
     assert message is None
 
 
+def test_build_message_from_payload_accepts_claude_session_start_hook():
+    message = build_message_from_payload(
+        '{"hook_event_name":"SessionStart","session_id":"claude-session","source":"startup"}',
+        notify_config=NotifyConfig(),
+        runtime_config={},
+        summary_loader=lambda session: "",
+    )
+
+    assert message is not None
+    assert message.event == "session-start"
+    assert message.session == "claude-session"
+    assert message.metadata["hook_source"] == "startup"
+
+
+def test_build_message_from_payload_ignores_non_startup_session_start_hook():
+    message = build_message_from_payload(
+        '{"hook_event_name":"SessionStart","session_id":"claude-session","source":"resume"}',
+        notify_config=NotifyConfig(),
+        runtime_config={},
+        summary_loader=lambda session: "",
+    )
+
+    assert message is None
+
+
+def test_build_message_from_payload_accepts_claude_prompt_submit_hook_without_summary_loader():
+    calls: list[str] = []
+
+    message = build_message_from_payload(
+        '{"hook_event_name":"UserPromptSubmit","session_id":"claude-session","prompt":"hello"}',
+        notify_config=NotifyConfig(),
+        runtime_config={},
+        summary_loader=lambda session: calls.append(session) or "UNUSED",
+    )
+
+    assert message is not None
+    assert message.event == "prompt-accepted"
+    assert calls == []
+
+
 def test_assistant_message_from_transcript_returns_empty_for_missing_path():
     result = payload_module._assistant_message_from_transcript(
         {"transcript_path": "/tmp/orche-missing-transcript.jsonl"},

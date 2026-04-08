@@ -441,6 +441,7 @@ Notes:
 
 - `claude.home-path` and `claude.config-path` affect the source Claude state that `orche` mirrors into managed Claude sessions.
 - after changing any of these keys, new Claude sessions use the updated value immediately.
+- managed Codex runtimes keep using an isolated `CODEX_HOME`; `orche` also writes `check_for_update_on_startup = false` and `[notice].hide_rate_limit_model_nudge = true` there to avoid startup update checks and model-switch nudges interfering with managed sessions.
 
 ## Prerequisites
 

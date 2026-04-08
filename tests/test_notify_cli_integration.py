@@ -69,6 +69,84 @@ def test_notify_hidden_command_sends_message_with_explicit_channel(xdg_runtime, 
     assert fake_client.requests[0]["json_body"]["content"].startswith("<@1475734550813605959> Done")
 
 
+def test_notify_hidden_command_session_start_updates_internal_startup_state_without_delivery(xdg_runtime):
+    from backend import load_meta, save_meta
+
+    write_runtime_config(
+        xdg_runtime["config_path"],
+        {
+            "notify_enabled": False,
+            "session": "repo-claude-main",
+            "cwd": "/tmp/repo",
+        },
+    )
+    save_meta(
+        "repo-claude-main",
+        {
+            "session": "repo-claude-main",
+            "cwd": "/tmp/repo",
+            "agent": "claude",
+            "startup": {
+                "state": "launching",
+                "started_at": 1.0,
+            },
+        },
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["notify-internal", "--session", "repo-claude-main"],
+        input='{"hook_event_name":"SessionStart","source":"startup"}',
+    )
+
+    assert result.exit_code == 0
+    assert "notify ok: internal event=session-start detail=startup-ready" in result.output
+    assert load_meta("repo-claude-main")["startup"]["state"] == "ready"
+
+
+def test_notify_hidden_command_prompt_submit_acknowledges_pending_turn_without_delivery(xdg_runtime):
+    from backend import load_meta, save_meta
+
+    write_runtime_config(
+        xdg_runtime["config_path"],
+        {
+            "notify_enabled": False,
+            "session": "repo-claude-main",
+            "cwd": "/tmp/repo",
+        },
+    )
+    save_meta(
+        "repo-claude-main",
+        {
+            "session": "repo-claude-main",
+            "cwd": "/tmp/repo",
+            "agent": "claude",
+            "pending_turn": {
+                "turn_id": "turn-1",
+                "prompt": "hello",
+                "submitted_at": 1.0,
+                "pane_id": "%1",
+                "notifications": {},
+                "prompt_ack": {
+                    "state": "pending",
+                    "accepted_at": 0.0,
+                    "source": "",
+                },
+            },
+        },
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["notify-internal", "--session", "repo-claude-main"],
+        input='{"hook_event_name":"UserPromptSubmit","prompt":"hello"}',
+    )
+
+    assert result.exit_code == 0
+    assert "notify ok: internal event=prompt-accepted detail=pending-turn-updated" in result.output
+    assert load_meta("repo-claude-main")["pending_turn"]["prompt_ack"]["state"] == "accepted"
+
+
 def test_notify_hidden_command_verbose_prints_config_and_event(xdg_runtime, monkeypatch):
     fake_client = FakeHTTPClient()
     monkeypatch.setattr("notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))

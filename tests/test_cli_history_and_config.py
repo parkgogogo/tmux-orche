@@ -38,7 +38,7 @@ def test_backend_run_decodes_utf8_output_under_ascii_locale():
         [
             sys.executable,
             "-c",
-            "import sys; sys.stdout.buffer.write('pane ╭•\\n'.encode('utf-8'))",
+            "import sys; sys.stdout.buffer.write(b'pane \\xe2\\x95\\xad\\xe2\\x80\\xa2\\n')",
         ],
         capture=True,
         env={

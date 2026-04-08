@@ -7,6 +7,7 @@ import re
 import secrets
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -18,6 +19,7 @@ from rich.table import Table
 from rich.text import Text
 from typer.core import TyperGroup
 
+from tls import configure_tls_runtime
 from backend import (
     BACKEND,
     OrcheError,
@@ -33,6 +35,7 @@ from backend import (
     complete_pending_turn,
     current_session_id,
     default_session_name,
+    expire_managed_sessions,
     ensure_native_session,
     ensure_session,
     get_config_value,
@@ -43,6 +46,9 @@ from backend import (
     latest_turn_summary,
     log_event,
     log_exception,
+    mark_pending_turn_prompt_accepted,
+    mark_session_startup_blocked,
+    mark_session_startup_ready,
     release_turn_notification,
     resolve_session_context,
     run_session_watchdog,
@@ -53,6 +59,7 @@ from backend import (
 )
 from notify import (
     NotificationService,
+    NotifyEvent,
     ResolvedRoute,
     build_message_from_payload,
     dispatch_event,
@@ -251,6 +258,26 @@ def _shortcut_session_name(cwd: Path, agent: str) -> str:
     return default_session_name(cwd.resolve(), agent, secrets.token_hex(3))
 
 
+def _inline_parent_session_name(notify: Optional[str]) -> str:
+    provider, target = _parse_notify_binding(notify)
+    if provider != "tmux-bridge" or not target:
+        return ""
+    try:
+        current = current_session_id()
+    except OrcheError:
+        return ""
+    return target if current and target == current else ""
+
+
+def _associated_session_name(name: Optional[str], cwd: Path, agent: str, notify: Optional[str]) -> str:
+    if name:
+        return name
+    parent_session = _inline_parent_session_name(notify)
+    if not parent_session:
+        return default_session_name(cwd.resolve(), agent, secrets.token_hex(3))
+    return default_session_name(cwd.resolve(), agent, f"{parent_session}-{secrets.token_hex(3)}")
+
+
 def _default_cwd() -> Path:
     return Path.cwd().resolve()
 
@@ -341,6 +368,22 @@ def _render_status(info: dict) -> None:
     body.append("yes\n" if info.get("pane_exists") else "no\n")
     body.append("CWD: ", style="bold cyan")
     body.append(f"{info.get('cwd', '-')}")
+    if info.get("parent_session"):
+        body.append("\nParent: ", style="bold cyan")
+        body.append(str(info.get("parent_session") or "-"))
+    if int(info.get("child_count") or 0) > 0:
+        body.append("\nChildren: ", style="bold cyan")
+        body.append(str(info.get("child_count") or 0))
+    ttl_seconds = int(info.get("ttl_seconds") or 0)
+    if ttl_seconds > 0:
+        body.append("\nTTL: ", style="bold cyan")
+        body.append(f"{ttl_seconds}s")
+        if info.get("ttl_exempt_because_parent_alive"):
+            body.append(" (parent alive)")
+    last_event_at = float(info.get("last_event_at") or 0.0)
+    if last_event_at > 0.0:
+        body.append("\nLast event: ", style="bold cyan")
+        body.append(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_event_at)))
     notify_binding = info.get("notify_binding")
     if isinstance(notify_binding, dict) and notify_binding:
         body.append("\nNotify: ", style="bold cyan")
@@ -348,11 +391,55 @@ def _render_status(info: dict) -> None:
     if info.get("pending_turn_id"):
         body.append("\nPending turn: ", style="bold cyan")
         body.append(str(info["pending_turn_id"]))
+    startup = info.get("startup")
+    if isinstance(startup, dict) and startup:
+        body.append("\nStartup: ", style="bold cyan")
+        body.append(str(startup.get("state") or "-"))
+        if startup.get("blocked_reason"):
+            body.append(f" ({startup.get('blocked_reason')})")
+    prompt_ack = info.get("prompt_ack")
+    if isinstance(prompt_ack, dict) and prompt_ack:
+        body.append("\nPrompt ack: ", style="bold cyan")
+        body.append(str(prompt_ack.get("state") or "-"))
     watchdog = info.get("watchdog")
     if isinstance(watchdog, dict) and watchdog:
         body.append("\nWatchdog: ", style="bold cyan")
         body.append(str(watchdog.get("state") or "-"))
     console.print(Panel.fit(body, title="orche status", border_style="blue"))
+
+
+def _apply_internal_notify_event(event: NotifyEvent) -> tuple[bool, Optional[NotifyEvent]]:
+    if event.event == "session-start":
+        mark_session_startup_ready(event.session, source="session-start")
+        console.print("notify ok: internal event=session-start detail=startup-ready")
+        return True, None
+    if event.event == "prompt-accepted":
+        prompt_ack = mark_pending_turn_prompt_accepted(event.session, source="user-prompt-submit")
+        detail = "pending-turn-updated" if prompt_ack else "no-pending-turn"
+        console.print(f"notify ok: internal event=prompt-accepted detail={detail}")
+        return True, None
+    if event.event not in {"notification", "permission-request"}:
+        return False, event
+    reason = str(event.summary or "").strip()
+    if not reason:
+        reason = "Claude requested permission" if event.event == "permission-request" else "Claude sent a notification"
+    startup, changed = mark_session_startup_blocked(
+        event.session,
+        reason=reason,
+        event_name=event.event,
+    )
+    if not changed:
+        detail = str(startup.get("state") or "ignored")
+        console.print(f"notify ok: internal event={event.event} detail={detail}")
+        return True, None
+    return False, NotifyEvent(
+        event="startup-blocked",
+        summary=reason,
+        session=event.session,
+        cwd=event.cwd,
+        status="warning",
+        metadata={**dict(event.metadata), "source": "startup"},
+    )
 
 
 def _open_session(
@@ -363,7 +450,7 @@ def _open_session(
     notify: Optional[str],
     cli_args: list[str],
 ) -> tuple[str, str]:
-    session = _session_name(name, cwd, agent)
+    session = _associated_session_name(name, cwd, agent, notify)
     if session_exists(session):
         raise OrcheError(
             f"Session {session} already exists. Use 'orche attach {session}' or choose a different --name."
@@ -390,14 +477,20 @@ def _open_session(
     return session, pane_id
 
 
-def _open_shortcut_session(ctx: typer.Context, agent: str) -> tuple[str, str]:
-    resolved_cwd = _resolve_path(_default_cwd(), must_exist=True, require_dir=True)
+def _open_shortcut_session(
+    ctx: typer.Context,
+    agent: str,
+    *,
+    cwd: Optional[Path] = None,
+    name: Optional[str] = None,
+) -> tuple[str, str]:
+    resolved_cwd = _resolve_path(cwd or _default_cwd(), must_exist=True, require_dir=True)
     if resolved_cwd is None:
         raise OrcheError("Failed to resolve cwd")
     return _open_session(
         cwd=resolved_cwd,
         agent=agent,
-        name=_shortcut_session_name(resolved_cwd, agent),
+        name=name or _shortcut_session_name(resolved_cwd, agent),
         notify=None,
         cli_args=list(ctx.args),
     )
@@ -415,7 +508,10 @@ def main_callback(
     version: Optional[bool] = typer.Option(None, "--version", "-v", help="Show version and exit."),
 ) -> None:
     _configure_output_streams()
+    configure_tls_runtime()
     ensure_directories()
+    if ctx.invoked_subcommand not in {"notify-internal", "_notify-discord", "watchdog-loop-internal"}:
+        expire_managed_sessions()
     if version:
         console.print(f"orche {__version__}")
         raise typer.Exit()
@@ -532,9 +628,20 @@ def attach(
 
 
 @app.command("codex", context_settings=_OPEN_CONTEXT)
-def codex_shortcut(ctx: typer.Context) -> None:
+def codex_shortcut(
+    ctx: typer.Context,
+    cwd: Optional[Path] = typer.Option(
+        None,
+        callback=_resolve_cwd,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=False,
+        help="Working directory for the session. Defaults to the current directory.",
+    ),
+    name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-codex-<random>."),
+) -> None:
     try:
-        session, pane_id = _open_shortcut_session(ctx, "codex")
+        session, pane_id = _open_shortcut_session(ctx, "codex", cwd=cwd, name=name)
         attach_session(session, pane_id=pane_id)
         _record_session_action(session, "attach")
     except (OrcheError, subprocess.CalledProcessError) as exc:
@@ -542,9 +649,20 @@ def codex_shortcut(ctx: typer.Context) -> None:
 
 
 @app.command("claude", context_settings=_OPEN_CONTEXT)
-def claude_shortcut(ctx: typer.Context) -> None:
+def claude_shortcut(
+    ctx: typer.Context,
+    cwd: Optional[Path] = typer.Option(
+        None,
+        callback=_resolve_cwd,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=False,
+        help="Working directory for the session. Defaults to the current directory.",
+    ),
+    name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-claude-<random>."),
+) -> None:
     try:
-        session, pane_id = _open_shortcut_session(ctx, "claude")
+        session, pane_id = _open_shortcut_session(ctx, "claude", cwd=cwd, name=name)
         attach_session(session, pane_id=pane_id)
         _record_session_action(session, "attach")
     except (OrcheError, subprocess.CalledProcessError) as exc:
@@ -753,6 +871,11 @@ def notify_internal_command(
             explicit_channel_id=resolved_channel_id,
             status=status,
         )
+        handled, replacement_event = _apply_internal_notify_event(event) if event is not None else (False, event)
+        if handled:
+            return
+        if replacement_event is not None:
+            event = replacement_event
         routes = []
         if event is not None:
             routes = list(

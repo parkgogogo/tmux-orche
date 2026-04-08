@@ -9,6 +9,7 @@ description = "Typer-based CLI for tmux-backed Codex orchestration sessions"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+  "certifi>=2024.0.0",
   "rich>=13.9.0",
   "typer>=0.16.0",
 ]
@@ -24,7 +25,7 @@ orche = "cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["backend", "cli", "notify_hook", "paths", "self_update", "version"]
+py-modules = ["backend", "cli", "notify_hook", "paths", "self_update", "tls", "version"]
 packages = ["notify", "agents"]
 
 [tool.setuptools.dynamic]

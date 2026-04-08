@@ -20,6 +20,10 @@ EVENT_ALIASES = {
     "subagentstop": "completed",
     "completed": "completed",
     "complete": "completed",
+    "sessionstart": "session-start",
+    "userpromptsubmit": "prompt-accepted",
+    "notification": "notification",
+    "permissionrequest": "permission-request",
     "startup-blocked": "startup-blocked",
     "startup_blocked": "startup-blocked",
     "stalled": "stalled",
@@ -27,7 +31,7 @@ EVENT_ALIASES = {
     "needs_input": "needs-input",
     "failed": "failed",
 }
-SUPPORTED_EVENTS = set(EVENT_ALIASES)
+SUPPORTED_EVENTS = set(EVENT_ALIASES) | set(EVENT_ALIASES.values())
 
 
 def _first_string(*values: Any) -> str:
@@ -216,6 +220,24 @@ def _assistant_message(payload: Mapping[str, Any]) -> str:
     )
 
 
+def _payload_hook_event_name(payload: Mapping[str, Any]) -> str:
+    return _first_string(
+        payload.get("hook_event_name"),
+        _payload_value(payload, ("payload", "hook_event_name")),
+    )
+
+
+def _payload_notification_type(payload: Mapping[str, Any]) -> str:
+    return _first_string(
+        payload.get("notification_type"),
+        _payload_value(payload, ("payload", "notification_type")),
+    )
+
+
+def _payload_title(payload: Mapping[str, Any]) -> str:
+    return _first_string(payload.get("title"), _payload_value(payload, ("payload", "title")))
+
+
 def _target_provider(
     *,
     runtime_config: Mapping[str, Any],
@@ -370,6 +392,14 @@ def _default_summary_for_event(event_name: str, notify_config: NotifyConfig) -> 
         return "Agent turn failed"
     if event_name == "startup-blocked":
         return "Agent startup blocked"
+    if event_name == "session-start":
+        return "Claude session started"
+    if event_name == "prompt-accepted":
+        return "Claude accepted the prompt"
+    if event_name == "notification":
+        return "Claude sent a notification"
+    if event_name == "permission-request":
+        return "Claude requested permission"
     if event_name == "needs-input":
         return "Agent likely needs input"
     if event_name == "stalled":
@@ -400,6 +430,8 @@ def build_message_from_payload(
     if payload is None:
         return None
     event_name = _event_name(payload)
+    if event_name == "session-start" and _payload_source(payload).strip().lower() != "startup":
+        return None
     if event_name not in SUPPORTED_EVENTS:
         return None
     session = _first_string(explicit_session, _payload_session(payload), runtime_config.get("session"))
@@ -417,7 +449,7 @@ def build_message_from_payload(
             assistant_message = _first_string(transcript_summary, loaded_summary, assistant_message)
         else:
             assistant_message = _first_string(transcript_summary, assistant_message, loaded_summary)
-    elif session:
+    elif session and event_name not in {"session-start", "prompt-accepted", "notification", "permission-request", "startup-blocked"}:
         loaded_summary = summary_loader(session)
     if not assistant_message and loaded_summary:
         assistant_message = loaded_summary
@@ -446,6 +478,10 @@ def build_message_from_payload(
             "turn_id": _payload_turn_id(payload),
             "input_message": _payload_input_message(payload),
             "source": _payload_source(payload),
+            "hook_event_name": _payload_hook_event_name(payload),
+            "hook_source": _payload_source(payload),
+            "notification_type": _payload_notification_type(payload),
+            "title": _payload_title(payload),
             "tail_text": _payload_tail_text(payload),
             "tail_lines": _payload_tail_lines(payload),
         },

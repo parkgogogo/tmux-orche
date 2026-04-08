@@ -6,6 +6,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
+from tls import urlopen
+
 
 @dataclass(frozen=True)
 class HTTPResponse:
@@ -42,7 +44,7 @@ class UrllibHTTPClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with urlopen(request, timeout=timeout) as response:
                 body = response.read().decode("utf-8", errors="replace")
                 status = getattr(response, "status", 200)
                 return HTTPResponse(status_code=status, body=body)

@@ -4,7 +4,6 @@ import contextlib
 import json
 import re
 import shlex
-import shutil
 import time
 from pathlib import Path
 
@@ -130,14 +129,6 @@ def default_settings_path(runtime_home: Path) -> Path:
     return runtime_home / "settings.json"
 
 
-def default_managed_source_config_path(runtime_home: Path) -> Path:
-    return runtime_home / ".claude.json"
-
-
-def default_managed_source_home_path(runtime_home: Path) -> Path:
-    return runtime_home / ".claude"
-
-
 def claude_command_tokens() -> list[str]:
     raw = str(DEFAULT_CLAUDE_COMMAND or "").strip() or "claude"
     tokens = [token for token in shlex.split(raw) if token]
@@ -165,6 +156,10 @@ def source_claude_home_path() -> Path:
     return Path(DEFAULT_CLAUDE_SOURCE_HOME).expanduser()
 
 
+def source_settings_path() -> Path:
+    return source_claude_home_path() / "settings.json"
+
+
 @contextlib.contextmanager
 def source_config_lock(*, timeout: float = 5.0):
     ensure_directories()
@@ -188,7 +183,7 @@ def source_config_lock(*, timeout: float = 5.0):
             path.unlink()
 
 
-def _read_source_config(path: Path) -> dict[str, object]:
+def _read_json_object(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
     try:
@@ -204,7 +199,7 @@ def sync_trust_to_source_config(cwd: Path) -> dict[str, object]:
     config_path = source_claude_config_path()
     target = str(cwd.resolve())
     with source_config_lock():
-        original = _read_source_config(config_path)
+        original = _read_json_object(config_path)
         projects = original.get("projects")
         if projects is None:
             projects_dict: dict[str, object] = {}
@@ -233,10 +228,18 @@ def sync_trust_to_source_config(cwd: Path) -> dict[str, object]:
         return updated
 
 
-def render_stop_hook_command(hook_path: Path, *, session: str, discord_channel_id: str | None) -> str:
+def render_hook_command(
+    hook_path: Path,
+    *,
+    session: str,
+    discord_channel_id: str | None,
+    status: str | None = None,
+) -> str:
     parts = ["/bin/bash", str(hook_path), "--session", session]
     if discord_channel_id:
         parts.extend(["--channel-id", validate_discord_channel_id(discord_channel_id)])
+    if status:
+        parts.extend(["--status", status])
     return " ".join(shlex.quote(part) for part in parts)
 
 
@@ -250,13 +253,51 @@ def build_settings_payload(
     payload = dict(source_payload or {})
     existing_hooks = payload.get("hooks")
     hooks = dict(existing_hooks) if isinstance(existing_hooks, dict) else {}
+    command_hook = {
+        "type": "command",
+        "command": render_hook_command(
+            default_notify_hook_path(runtime_home),
+            session=session,
+            discord_channel_id=discord_channel_id,
+        ),
+    }
+    warning_hook = {
+        "type": "command",
+        "command": render_hook_command(
+            default_notify_hook_path(runtime_home),
+            session=session,
+            discord_channel_id=discord_channel_id,
+            status="warning",
+        ),
+    }
+    session_start_entries = list(hooks.get("SessionStart")) if isinstance(hooks.get("SessionStart"), list) else []
+    session_start_entries.append(
+        {
+            "matcher": "startup",
+            "hooks": [command_hook],
+        }
+    )
+    hooks["SessionStart"] = session_start_entries
+    prompt_submit_entries = (
+        list(hooks.get("UserPromptSubmit")) if isinstance(hooks.get("UserPromptSubmit"), list) else []
+    )
+    prompt_submit_entries.append({"hooks": [command_hook]})
+    hooks["UserPromptSubmit"] = prompt_submit_entries
+    notification_entries = list(hooks.get("Notification")) if isinstance(hooks.get("Notification"), list) else []
+    notification_entries.append({"hooks": [warning_hook]})
+    hooks["Notification"] = notification_entries
+    permission_request_entries = (
+        list(hooks.get("PermissionRequest")) if isinstance(hooks.get("PermissionRequest"), list) else []
+    )
+    permission_request_entries.append({"hooks": [warning_hook]})
+    hooks["PermissionRequest"] = permission_request_entries
     stop_entries = list(hooks.get("Stop")) if isinstance(hooks.get("Stop"), list) else []
     stop_entries.append(
         {
             "hooks": [
                 {
                     "type": "command",
-                    "command": render_stop_hook_command(
+                    "command": render_hook_command(
                         default_notify_hook_path(runtime_home),
                         session=session,
                         discord_channel_id=discord_channel_id,
@@ -269,15 +310,6 @@ def build_settings_payload(
     payload["hooks"] = hooks
     return payload
 
-
-def copy_source_home_to_runtime(runtime_home: Path) -> None:
-    source_home = source_claude_home_path()
-    if not source_home.exists():
-        return
-    target_home = default_managed_source_home_path(runtime_home)
-    if target_home.exists():
-        shutil.rmtree(target_home, ignore_errors=True)
-    shutil.copytree(source_home, target_home, symlinks=True, ignore_dangling_symlinks=True)
 
 class ClaudeAgent(AgentPlugin):
     name = "claude"
@@ -292,23 +324,22 @@ class ClaudeAgent(AgentPlugin):
         cwd: Path,
         discord_channel_id: str | None,
     ) -> AgentRuntime:
-        source_payload = sync_trust_to_source_config(cwd)
+        sync_trust_to_source_config(cwd)
         target = default_claude_home_path(session)
         target.mkdir(parents=True, exist_ok=True)
-        copy_source_home_to_runtime(target)
         write_notify_hook(default_notify_hook_path(target))
+        runtime_settings_path = default_settings_path(target)
         settings_payload = build_settings_payload(
             target,
             session=session,
             discord_channel_id=discord_channel_id,
-            source_payload=source_payload,
+            source_payload=_read_json_object(source_settings_path()),
         )
         serialized_settings = json.dumps(settings_payload, indent=2, ensure_ascii=False) + "\n"
         write_text_atomically(
-            default_settings_path(target),
+            runtime_settings_path,
             serialized_settings,
         )
-        write_text_atomically(default_managed_source_config_path(target), serialized_settings)
         return AgentRuntime(home=str(target.resolve()), managed=True, label=self.runtime_label)
 
     def build_launch_command(
@@ -328,7 +359,6 @@ class ClaudeAgent(AgentPlugin):
         normalized_runtime_home = normalize_runtime_home(runtime.home)
         if normalized_runtime_home:
             prefix.append(f"mkdir -p {shlex.quote(normalized_runtime_home)}")
-            prefix.append(f"export HOME={shlex.quote(normalized_runtime_home)}")
         if session:
             prefix.append(f"export ORCHE_SESSION={shlex.quote(session)}")
         if discord_channel_id:
@@ -337,6 +367,8 @@ class ClaudeAgent(AgentPlugin):
         command = [
             *self.command_tokens(),
             "--dangerously-skip-permissions",
+            "--setting-sources",
+            "user",
             "--settings",
             str(settings_path),
         ]

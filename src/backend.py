@@ -46,7 +46,9 @@ WATCHDOG_ACTIVE_CPU_THRESHOLD = 5.0
 LATEST_TURN_SUMMARY_RETRY_SECONDS = 5.0
 LATEST_TURN_SUMMARY_RETRY_INTERVAL = 0.25
 WATCHDOG_NOTIFY_BUFFER = 10.0
+TMUX_PANE_OUTPUT_SEPARATOR = "@@ORCHE_PANE@@"
 LAUNCH_ERROR_PREFIX = "orche launch error:"
+DEFAULT_MANAGED_SESSION_TTL_SECONDS = 3600
 CONFIG_COMMENT = (
     "orche runtime config. session is the active orche agent session label; "
     "discord_session is the Discord/OpenClaw session key used for notify routing."
@@ -64,6 +66,7 @@ CONFIG_KEY_MAP = {
     "discord.bot-token": "discord_bot_token",
     "discord.mention-user-id": "notify_mention_user_id",
     "discord.webhook-url": "discord_webhook_url",
+    "managed.ttl-seconds": "managed_session_ttl_seconds",
     "notify.enabled": "notify_enabled",
 }
 
@@ -241,6 +244,8 @@ def run(
     return subprocess.run(
         cmd,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         input=input_text,
         check=check,
         capture_output=capture,
@@ -416,14 +421,14 @@ def list_windows(target: Optional[str] = None) -> List[Dict[str, str]]:
             "-t",
             session_name,
             "-F",
-            "#{window_id}\t#{window_name}",
+            _tmux_join_fields("#{window_id}", "#{window_name}"),
             check=False,
             capture=True,
         )
         if result.returncode != 0:
             continue
         for line in result.stdout.splitlines():
-            parts = line.split("\t")
+            parts = _tmux_split_fields(line, expected=2)
             if len(parts) == 2:
                 windows.append({"session_name": session_name, "window_id": parts[0], "window_name": parts[1]})
     return windows
@@ -469,7 +474,17 @@ def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
     args.extend(
         [
             "-F",
-            "#{session_name}\t#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
+            _tmux_join_fields(
+                "#{session_name}",
+                "#{pane_id}",
+                "#{window_id}",
+                "#{window_name}",
+                "#{pane_dead}",
+                "#{pane_pid}",
+                "#{pane_current_command}",
+                "#{pane_current_path}",
+                "#{pane_title}",
+            ),
         ]
     )
     result = tmux(*args, check=False, capture=True)
@@ -477,7 +492,7 @@ def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
         return []
     panes: List[Dict[str, str]] = []
     for line in result.stdout.splitlines():
-        parts = line.split("\t")
+        parts = _tmux_split_fields(line, expected=9)
         if len(parts) != 9:
             continue
         if not target and not _is_orche_tmux_session(parts[0]):
@@ -503,9 +518,19 @@ def get_pane_info(pane_id: str) -> Optional[Dict[str, str]]:
         return None
     raw = _tmux_value_for_pane(
         pane_id,
-        "#{session_name}\t#{pane_id}\t#{window_id}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}",
+        _tmux_join_fields(
+            "#{session_name}",
+            "#{pane_id}",
+            "#{window_id}",
+            "#{window_name}",
+            "#{pane_dead}",
+            "#{pane_pid}",
+            "#{pane_current_command}",
+            "#{pane_current_path}",
+            "#{pane_title}",
+        ),
     )
-    parts = raw.split("\t") if raw else []
+    parts = _tmux_split_fields(raw, expected=9)
     if len(parts) != 9:
         return None
     return {
@@ -539,9 +564,9 @@ def _tmux_value_for_pane(pane_id: str, fmt: str) -> str:
 def pane_cursor_state(pane_id: str) -> Dict[str, str]:
     raw = _tmux_value_for_pane(
         pane_id,
-        "#{cursor_x}\t#{cursor_y}\t#{pane_in_mode}\t#{pane_dead}",
+        _tmux_join_fields("#{cursor_x}", "#{cursor_y}", "#{pane_in_mode}", "#{pane_dead}"),
     )
-    parts = raw.split("\t") if raw else []
+    parts = _tmux_split_fields(raw, expected=4)
     while len(parts) < 4:
         parts.append("")
     return {
@@ -694,6 +719,97 @@ def load_meta(session: str) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _iter_meta_payloads() -> Iterable[Dict[str, Any]]:
+    ensure_directories()
+    for path in sorted(meta_dir().glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        session = str(payload.get("session") or path.stem).strip()
+        if not session:
+            continue
+        payload["session"] = session
+        yield payload
+
+
+def managed_session_ttl_seconds(config: Optional[Mapping[str, Any]] = None) -> int:
+    payload = dict(config or load_config())
+    raw = payload.get("managed_session_ttl_seconds", DEFAULT_MANAGED_SESSION_TTL_SECONDS)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MANAGED_SESSION_TTL_SECONDS
+
+
+def session_parent(meta: Mapping[str, Any]) -> str:
+    return str(meta.get("parent_session") or "").strip()
+
+
+def session_children(session: str, *, live_only: bool = False) -> List[str]:
+    target = str(session or "").strip()
+    if not target:
+        return []
+    children: List[str] = []
+    for payload in _iter_meta_payloads():
+        child_session = str(payload.get("session") or "").strip()
+        if not child_session:
+            continue
+        if session_parent(payload) != target:
+            continue
+        if live_only and not session_metadata_is_live(child_session, payload):
+            continue
+        children.append(child_session)
+    return sorted(dict.fromkeys(children))
+
+
+def managed_session_last_event_at(meta: Mapping[str, Any], *, default: float = 0.0) -> float:
+    for value in (
+        meta.get("last_event_at"),
+        meta.get("updated_at"),
+        meta.get("last_seen_at"),
+    ):
+        try:
+            numeric = float(value or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if numeric > 0.0:
+            return numeric
+    return default
+
+
+def touch_session_event(session: str, *, source: str = "") -> Dict[str, Any]:
+    session_name = str(session or "").strip()
+    if not session_name:
+        return {}
+    with session_lock(session_name):
+        meta = load_meta(session_name)
+        if not meta or session_launch_mode(meta) != "managed":
+            return {}
+        timestamp = time.time()
+        meta["last_event_at"] = timestamp
+        meta["last_event_source"] = str(source or "").strip()
+        meta["expires_after_seconds"] = managed_session_ttl_seconds()
+        save_meta(session_name, meta)
+        return {
+            "last_event_at": timestamp,
+            "last_event_source": meta["last_event_source"],
+            "expires_after_seconds": meta["expires_after_seconds"],
+        }
+
+
+def _session_has_live_parent(meta: Mapping[str, Any]) -> bool:
+    parent = session_parent(meta)
+    if not parent:
+        return False
+    parent_meta = load_meta(parent)
+    if not parent_meta:
+        return False
+    return session_metadata_is_live(parent, parent_meta)
+
+
 def validate_discord_channel_id(value: str, *, option_name: str = "--channel-id") -> str:
     try:
         return common_validate_discord_channel_id(value)
@@ -808,19 +924,11 @@ def load_history_entries(session: str) -> List[Dict[str, Any]]:
 
 
 def list_sessions() -> List[Dict[str, Any]]:
+    expire_managed_sessions()
     ensure_directories()
     sessions: List[Dict[str, Any]] = []
-    for path in sorted(meta_dir().glob("*.json")):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        session = str(payload.get("session") or path.stem).strip()
-        if not session:
-            continue
-        payload["session"] = session
+    for payload in _iter_meta_payloads():
+        session = str(payload.get("session") or "").strip()
         if not session_metadata_is_live(session, payload):
             remove_meta(session)
             continue
@@ -863,6 +971,41 @@ def session_metadata_is_live(session: str, meta: Optional[Mapping[str, Any]] = N
     return bool(target_tmux_session and _tmux_has_session(target_tmux_session))
 
 
+def _managed_session_expires_at(meta: Mapping[str, Any]) -> float:
+    ttl = int(meta.get("expires_after_seconds") or managed_session_ttl_seconds())
+    if ttl <= 0:
+        return 0.0
+    last_event_at = managed_session_last_event_at(meta)
+    if last_event_at <= 0.0:
+        return 0.0
+    return last_event_at + ttl
+
+
+def expire_managed_sessions(*, now: Optional[float] = None) -> List[str]:
+    timestamp = time.time() if now is None else now
+    ttl = managed_session_ttl_seconds()
+    if ttl <= 0:
+        return []
+    expired_roots: List[str] = []
+    for payload in _iter_meta_payloads():
+        session = str(payload.get("session") or "").strip()
+        if not session or session_launch_mode(payload) != "managed":
+            continue
+        if not session_metadata_is_live(session, payload):
+            remove_meta(session)
+            continue
+        if _session_has_live_parent(payload):
+            continue
+        expires_at = _managed_session_expires_at(payload)
+        if expires_at > 0.0 and expires_at <= timestamp:
+            expired_roots.append(session)
+    closed: List[str] = []
+    for session in sorted(dict.fromkeys(expired_roots)):
+        close_session_tree(session, reason="ttl-expired")
+        closed.append(session)
+    return closed
+
+
 def _current_tmux_value(fmt: str) -> str:
     result = tmux("display-message", "-p", fmt, check=False, capture=True)
     if result.returncode != 0:
@@ -882,6 +1025,7 @@ def load_config() -> Dict[str, Any]:
         "discord_channel_id": "",
         "discord_webhook_url": "",
         "notify_enabled": True,
+        "managed_session_ttl_seconds": DEFAULT_MANAGED_SESSION_TTL_SECONDS,
         "session": "",
         "discord_session": "",
         "runtime_home": "",
@@ -944,6 +1088,11 @@ def set_config_value(key: str, value: str) -> Dict[str, Any]:
             normalized = False
         else:
             raise OrcheError("notify.enabled must be one of: true, false, 1, 0, yes, no, on, off")
+    elif key == "managed.ttl-seconds":
+        try:
+            normalized = int(value.strip())
+        except ValueError as exc:
+            raise OrcheError("managed.ttl-seconds must be an integer number of seconds") from exc
     else:
         normalized = value.strip()
     config[field] = normalized
@@ -1220,10 +1369,10 @@ def ensure_tmux_session(session: str, cwd: Path) -> str:
     return name
 
 
-def _pane_record_from_split_output(output: str) -> Dict[str, str]:
-    parts = (output or "").strip().split("\t")
+def _pane_record_from_tmux_output(output: str) -> Dict[str, str]:
+    parts = _tmux_split_fields(output, expected=4)
     if len(parts) != 4:
-        raise OrcheError("Failed to parse tmux split-window output")
+        raise OrcheError("Failed to parse tmux pane output")
     return {
         "session_name": parts[0],
         "pane_id": parts[1],
@@ -1235,6 +1384,48 @@ def _pane_record_from_split_output(output: str) -> Dict[str, str]:
         "pane_current_path": "",
         "pane_title": "",
     }
+
+
+def _tmux_join_fields(*parts: str) -> str:
+    return TMUX_PANE_OUTPUT_SEPARATOR.join(parts)
+
+
+def _tmux_split_fields(output: str, *, expected: int) -> List[str]:
+    rendered = str(output or "").strip()
+    if not rendered:
+        return []
+    parts = rendered.split(TMUX_PANE_OUTPUT_SEPARATOR)
+    if len(parts) == expected:
+        return parts
+    parts = rendered.split("\t")
+    if len(parts) == expected:
+        return parts
+    return []
+
+
+def create_dedicated_pane(session: str, cwd: Path) -> Dict[str, str]:
+    tmux_name = tmux_session_name(session)
+    if _tmux_has_session(tmux_name):
+        panes = list_panes(tmux_name)
+        if panes:
+            return panes[0]
+        raise OrcheError(f"Failed to create tmux pane for {session}")
+    result = tmux(
+        "new-session",
+        "-d",
+        "-s",
+        tmux_name,
+        "-n",
+        window_name(session),
+        "-c",
+        str(cwd),
+        "-P",
+        "-F",
+        _tmux_join_fields("#{session_name}", "#{pane_id}", "#{window_id}", "#{window_name}"),
+        check=True,
+        capture=True,
+    )
+    return _pane_record_from_tmux_output(result.stdout)
 
 
 def _preferred_host_pane(*, tmux_session: str, host_pane_id: str = "", exclude_pane_id: str = "") -> str:
@@ -1271,11 +1462,11 @@ def create_inline_pane(
         str(cwd),
         "-P",
         "-F",
-        "#{session_name}\t#{pane_id}\t#{window_id}\t#{window_name}",
+        _tmux_join_fields("#{session_name}", "#{pane_id}", "#{window_id}", "#{window_name}"),
         check=True,
         capture=True,
     )
-    return _pane_record_from_split_output(result.stdout), resolved_host_pane
+    return _pane_record_from_tmux_output(result.stdout), resolved_host_pane
 
 
 def normalize_pane(session: str, cwd: Path, pane: Dict[str, str]) -> str:
@@ -1337,11 +1528,7 @@ def ensure_pane(
                 host_pane_id=resolved_host_pane_id or _current_tmux_value("#{pane_id}"),
             )
         else:
-            tmux_name = ensure_tmux_session(session, cwd)
-            panes = list_panes(tmux_name)
-            if not panes:
-                raise OrcheError(f"Failed to create tmux pane for {session}")
-            pane = panes[0]
+            pane = create_dedicated_pane(session, cwd)
         pane_id = normalize_pane(session, cwd, pane)
         meta.update(
             {
@@ -1429,6 +1616,56 @@ def wait_for_agent_ready(plugin: AgentPlugin, pane_id: str, cwd: Path, *, timeou
     if bool(last_sample.get("agent_running")):
         raise AgentStartupBlockedError(f"{plugin.display_name} startup blocked before reaching ready state in {pane_id}")
     raise OrcheError(f"Timed out waiting for {plugin.display_name} to become ready in {pane_id}")
+
+
+def wait_for_managed_startup_ready(
+    session: str,
+    plugin: AgentPlugin,
+    pane_id: str,
+    cwd: Path,
+    *,
+    timeout: float = STARTUP_TIMEOUT,
+) -> str:
+    deadline = time.time() + timeout
+    ready_streak = 0
+    while time.time() <= deadline:
+        meta = load_meta(session)
+        startup = meta.get("startup") if isinstance(meta.get("startup"), dict) else {}
+        startup_state = str(startup.get("state") or "").strip().lower()
+        if startup_state == "ready":
+            return pane_id
+        if startup_state == "blocked":
+            blocked_reason = str(startup.get("blocked_reason") or "").strip()
+            detail = blocked_reason or f"{plugin.display_name} startup blocked before reaching ready state in {pane_id}"
+            raise AgentStartupBlockedError(detail)
+        capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES)
+        if any(prompt in capture for prompt in plugin.login_prompts):
+            raise OrcheError(f"{plugin.display_name} is not logged in inside the tmux pane")
+        ready_candidate = plugin.name == "codex" and plugin.capture_has_ready_surface(capture, cwd)
+        ready_streak = ready_streak + 1 if ready_candidate else 0
+        if ready_streak >= plugin.ready_streak_required:
+            mark_session_startup_ready(session, source="ready-surface-fallback")
+            return pane_id
+        info = get_pane_info(pane_id)
+        if info is None or info.get("pane_dead") == "1":
+            raise OrcheError(f"{plugin.display_name} pane exited before startup completed: {pane_id}")
+        if not is_agent_running(plugin, pane_id):
+            raise OrcheError(f"{plugin.display_name} process exited before startup completed: {pane_id}")
+        time.sleep(0.5)
+    reason = f"Timed out waiting for {plugin.display_name} SessionStart(startup) hook in {pane_id}"
+    mark_session_startup_timeout(session, reason=reason)
+    raise OrcheError(reason)
+
+
+def wait_for_claude_startup_ready(
+    session: str,
+    plugin: AgentPlugin,
+    pane_id: str,
+    cwd: Path,
+    *,
+    timeout: float = STARTUP_TIMEOUT,
+) -> str:
+    return wait_for_managed_startup_ready(session, plugin, pane_id, cwd, timeout=timeout)
 
 
 def wait_for_agent_process_start(
@@ -1555,6 +1792,8 @@ def append_action_history(session: str, cwd: Path, agent: str, action: str, **fi
             **fields,
         },
     )
+    if action != "close":
+        touch_session_event(session, source=f"action:{action}")
 
 
 def ensure_managed_codex_home(session: str, *, cwd: Path, discord_channel_id: Optional[str]) -> Path:
@@ -1734,6 +1973,10 @@ def ensure_native_session(
             "runtime_label": "",
             "codex_home": "",
             "codex_home_managed": False,
+            "parent_session": "",
+            "last_event_at": 0.0,
+            "last_event_source": "",
+            "expires_after_seconds": 0,
         }
     )
     meta.pop("discord_channel_id", None)
@@ -1785,6 +2028,134 @@ def _current_turn_entry(
     return "", {}
 
 
+def initialize_session_startup(
+    session: str,
+    *,
+    state: str = "launching",
+    started_at: float | None = None,
+) -> Dict[str, Any]:
+    timestamp = started_at if started_at is not None else time.time()
+    with session_lock(session):
+        meta = load_meta(session)
+        startup = {
+            "state": state,
+            "started_at": timestamp,
+            "ready_at": 0.0,
+            "ready_source": "",
+            "blocked_at": 0.0,
+            "blocked_reason": "",
+            "blocked_event": "",
+            "updated_at": timestamp,
+        }
+        meta["startup"] = startup
+        save_meta(session, meta)
+    touch_session_event(session, source=f"startup:{state}")
+    return dict(startup)
+
+
+def mark_session_startup_ready(session: str, *, source: str) -> Dict[str, Any]:
+    timestamp = time.time()
+    with session_lock(session):
+        meta = load_meta(session)
+        startup = dict(meta.get("startup") or {})
+        startup.update(
+            {
+                "state": "ready",
+                "ready_at": float(startup.get("ready_at") or timestamp),
+                "ready_source": str(source or "").strip(),
+                "blocked_at": 0.0,
+                "blocked_reason": "",
+                "blocked_event": "",
+                "updated_at": timestamp,
+            }
+        )
+        if not startup.get("started_at"):
+            startup["started_at"] = timestamp
+        meta["startup"] = startup
+        save_meta(session, meta)
+    touch_session_event(session, source=f"startup:ready:{source}")
+    return dict(startup)
+
+
+def mark_session_startup_timeout(session: str, *, reason: str = "") -> Dict[str, Any]:
+    timestamp = time.time()
+    with session_lock(session):
+        meta = load_meta(session)
+        startup = dict(meta.get("startup") or {})
+        startup.update(
+            {
+                "state": "timeout",
+                "blocked_reason": str(reason or startup.get("blocked_reason") or "").strip(),
+                "updated_at": timestamp,
+            }
+        )
+        if not startup.get("started_at"):
+            startup["started_at"] = timestamp
+        meta["startup"] = startup
+        save_meta(session, meta)
+    touch_session_event(session, source="startup:timeout")
+    return dict(startup)
+
+
+def mark_session_startup_blocked(
+    session: str,
+    *,
+    reason: str,
+    event_name: str,
+) -> Tuple[Dict[str, Any], bool]:
+    timestamp = time.time()
+    with session_lock(session):
+        meta = load_meta(session)
+        startup = dict(meta.get("startup") or {})
+        state = str(startup.get("state") or "").strip().lower()
+        if state != "launching":
+            return startup, False
+        blocked_reason = str(reason or "").strip()
+        blocked_event = str(event_name or "").strip()
+        changed = (
+            str(startup.get("blocked_reason") or "") != blocked_reason
+            or str(startup.get("blocked_event") or "") != blocked_event
+            or state != "blocked"
+        )
+        startup.update(
+            {
+                "state": "blocked",
+                "blocked_at": timestamp,
+                "blocked_reason": blocked_reason,
+                "blocked_event": blocked_event,
+                "updated_at": timestamp,
+            }
+        )
+        if not startup.get("started_at"):
+            startup["started_at"] = timestamp
+        meta["startup"] = startup
+        save_meta(session, meta)
+    touch_session_event(session, source=f"startup:blocked:{blocked_event or 'unknown'}")
+    return dict(startup), changed
+
+
+def mark_pending_turn_prompt_accepted(session: str, *, source: str = "user-prompt-submit") -> Dict[str, Any]:
+    timestamp = time.time()
+    with session_lock(session):
+        meta = load_meta(session)
+        pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
+        if not pending_turn:
+            return {}
+        prompt_ack = dict(pending_turn.get("prompt_ack") or {})
+        prompt_ack.update(
+            {
+                "state": "accepted",
+                "accepted_at": timestamp,
+                "source": str(source or "").strip(),
+            }
+        )
+        pending_turn["prompt_ack"] = prompt_ack
+        meta["pending_turn"] = pending_turn
+        save_meta(session, meta)
+    touch_session_event(session, source=f"prompt-ack:{source}")
+    return dict(prompt_ack)
+
+
 def claim_turn_notification(
     session: str,
     event: str,
@@ -1824,7 +2195,8 @@ def claim_turn_notification(
         turn["notifications"] = notifications
         meta[turn_key] = turn
         save_meta(session, meta)
-        return True
+    touch_session_event(session, source=f"notify-claim:{normalized_event}")
+    return True
 
 
 def release_turn_notification(
@@ -1856,6 +2228,7 @@ def release_turn_notification(
         turn["notifications"] = notifications
         meta[turn_key] = turn
         save_meta(session, meta)
+    touch_session_event(session, source=f"notify-release:{normalized_event}")
 
 
 def update_watchdog_metadata(
@@ -1876,7 +2249,8 @@ def update_watchdog_metadata(
         pending_turn["watchdog"] = watchdog
         meta["pending_turn"] = pending_turn
         save_meta(session, meta)
-        return dict(watchdog)
+    touch_session_event(session, source="watchdog")
+    return dict(watchdog)
 
 
 def _orche_bootstrap_command() -> List[str]:
@@ -1931,6 +2305,7 @@ def emit_internal_notify(
             detail=shorten((result.stderr or result.stdout or "").strip(), 400),
         )
         return False
+    touch_session_event(session, source=f"notify:{event}")
     return True
 
 
@@ -2173,6 +2548,7 @@ def complete_pending_turn(
         meta["last_completed_turn"] = completed
         meta.pop("pending_turn", None)
         save_meta(session, meta)
+    touch_session_event(session, source="turn-complete")
     if pid > 0 and process_is_alive(pid):
         with contextlib.suppress(OSError):
             os.kill(pid, signal.SIGTERM)
@@ -2449,7 +2825,7 @@ def ensure_session(
         )
         resolved_runtime_home = normalize_runtime_home(runtime.home)
         managed_runtime_home = True
-    if managed_runtime_home:
+    if managed_runtime_home and existing_meta and runtime_home_from_meta(existing_meta):
         runtime = prepare_managed_runtime(
             plugin,
             session,
@@ -2471,6 +2847,9 @@ def ensure_session(
         tmux_mode = "inline-pane" if use_inline_pane else "dedicated-session"
     elif not tmux_mode:
         tmux_mode = "dedicated-session"
+    parent_session = ""
+    if tmux_mode == "inline-pane" and str(resolved_notify_binding.get("provider") or "").strip() == "tmux-bridge":
+        parent_session = str(resolved_notify_binding.get("target") or "").strip()
     pane_id = ensure_pane(
         session,
         cwd,
@@ -2479,6 +2858,37 @@ def ensure_session(
         host_pane_id=host_pane_id,
         tmux_host_session=tmux_host_session,
     )
+    meta = load_meta(session)
+    meta.update(
+        {
+            "backend": BACKEND,
+            "session": session,
+            "cwd": str(cwd),
+            "agent": agent,
+            "pane_id": pane_id,
+            "launch_mode": "managed",
+            "tmux_mode": tmux_mode,
+            "host_pane_id": host_pane_id,
+            "tmux_host_session": tmux_host_session,
+            "last_seen_at": time.time(),
+            "parent_session": parent_session,
+            "last_event_at": time.time(),
+            "last_event_source": "open",
+            "expires_after_seconds": managed_session_ttl_seconds(),
+        }
+    )
+    apply_runtime_to_meta(meta, agent=agent, runtime=runtime)
+    meta.pop("native_cli_args", None)
+    meta.pop("discord_channel_id", None)
+    meta.pop("discord_session", None)
+    meta.pop("notify_routes", None)
+    if resolved_notify_binding:
+        meta["notify_binding"] = resolved_notify_binding
+    else:
+        meta.pop("notify_binding", None)
+    save_meta(session, meta)
+    if plugin.name in {"claude", "codex"} and runtime.managed:
+        initialize_session_startup(session)
     pane_id = ensure_agent_running(
         plugin,
         session,
@@ -2501,6 +2911,10 @@ def ensure_session(
             "host_pane_id": host_pane_id,
             "tmux_host_session": tmux_host_session,
             "last_seen_at": time.time(),
+            "parent_session": parent_session,
+            "last_event_at": time.time(),
+            "last_event_source": "open",
+            "expires_after_seconds": managed_session_ttl_seconds(),
         }
     )
     apply_runtime_to_meta(meta, agent=agent, runtime=runtime)
@@ -2513,6 +2927,11 @@ def ensure_session(
     else:
         meta.pop("notify_binding", None)
     save_meta(session, meta)
+    touch_session_event(session, source="open")
+    if runtime.managed and plugin.name in {"claude", "codex"}:
+        wait_for_managed_startup_ready(session, plugin, pane_id, cwd)
+    elif plugin.name == "claude":
+        wait_for_agent_ready(plugin, pane_id, cwd)
     update_runtime_config(
         session=session,
         cwd=cwd,
@@ -2560,6 +2979,11 @@ def send_prompt(
         "submitted_at": time.time(),
         "pane_id": pane_id,
         "notifications": {},
+        "prompt_ack": {
+            "state": "pending",
+            "accepted_at": 0.0,
+            "source": "",
+        },
         "watchdog": {
             "state": "queued",
             "started_at": 0.0,
@@ -2570,6 +2994,7 @@ def send_prompt(
         },
     }
     save_meta(session, meta)
+    touch_session_event(session, source="prompt-submit")
     plugin.submit_prompt(session, prompt, bridge=BRIDGE)
     try:
         start_session_watchdog(session, turn_id=turn_id)
@@ -2614,6 +3039,8 @@ def latest_turn_summary(session: str) -> str:
 
 def build_status(session: str) -> Dict[str, Any]:
     meta = load_meta(session)
+    if not meta:
+        raise OrcheError(f"Unknown session: {session}")
     pane_id = bridge_resolve(session) or str(meta.get("pane_id") or "")
     info = get_pane_info(pane_id) if pane_id else None
     resolved_tmux_session = str((info or {}).get("session_name") or meta.get("tmux_session") or "").strip()
@@ -2627,6 +3054,12 @@ def build_status(session: str) -> Dict[str, Any]:
     agent_running = bool(pane_id and is_agent_running(plugin, pane_id))
     pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else {}
     watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
+    startup = meta.get("startup") if isinstance(meta.get("startup"), dict) else {}
+    prompt_ack = pending_turn.get("prompt_ack") if isinstance(pending_turn.get("prompt_ack"), dict) else {}
+    parent_session = session_parent(meta)
+    child_count = len(session_children(session, live_only=True))
+    ttl_seconds = int(meta.get("expires_after_seconds") or managed_session_ttl_seconds())
+    last_event_at = managed_session_last_event_at(meta)
     return {
         "backend": BACKEND,
         "session": session,
@@ -2645,8 +3078,15 @@ def build_status(session: str) -> Dict[str, Any]:
         "pane_exists": bool(pane_id and pane_exists(pane_id)),
         "discord_session": discord_session,
         "notify_binding": notify_binding,
+        "parent_session": parent_session,
+        "child_count": child_count,
+        "last_event_at": last_event_at,
+        "ttl_seconds": ttl_seconds,
+        "ttl_exempt_because_parent_alive": bool(parent_session and _session_has_live_parent(meta)),
         "pending_turn_id": str(pending_turn.get("turn_id") or ""),
         "pending_turn_submitted_at": float(pending_turn.get("submitted_at") or 0.0),
+        "startup": dict(startup),
+        "prompt_ack": dict(prompt_ack),
         "watchdog": dict(watchdog),
     }
 
@@ -2706,8 +3146,10 @@ def cancel_session(session: str) -> str:
     return bridge_resolve(session) or "-"
 
 
-def close_session(session: str) -> str:
+def _close_session_single(session: str) -> str:
     meta = load_meta(session)
+    if not meta:
+        return "-"
     agent = str(meta.get("agent") or "codex")
     plugin = get_agent(agent)
     pane_id = bridge_resolve(session) or str(meta.get("pane_id") or "")
@@ -2751,3 +3193,22 @@ def close_session(session: str) -> str:
         save_config(config)
     remove_meta(session)
     return pane_id or "-"
+
+
+def close_session_tree(session: str, *, reason: str = "", _visited: Optional[Set[str]] = None) -> str:
+    session_name = str(session or "").strip()
+    if not session_name:
+        return "-"
+    visited = _visited if _visited is not None else set()
+    if session_name in visited:
+        return "-"
+    visited.add(session_name)
+    root_pane = bridge_resolve(session_name) or str(load_meta(session_name).get("pane_id") or "") or "-"
+    for child in session_children(session_name):
+        close_session_tree(child, reason=reason, _visited=visited)
+    _close_session_single(session_name)
+    return root_pane
+
+
+def close_session(session: str) -> str:
+    return close_session_tree(session)

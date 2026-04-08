@@ -29,7 +29,7 @@ def test_urllib_http_client_handles_success(monkeypatch):
         assert request.full_url == "https://discord.test"
         return FakeResponse(204, "ok")
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("notify.http.urlopen", fake_urlopen)
 
     response = client.post(
         "https://discord.test",
@@ -54,7 +54,7 @@ def test_urllib_http_client_handles_http_error(monkeypatch):
             fp=io.BytesIO(b"too many requests"),
         )
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("notify.http.urlopen", fake_urlopen)
 
     response = client.post(
         "https://discord.test",

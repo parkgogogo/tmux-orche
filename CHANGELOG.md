@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.4.48 - 2026-04-08
+
+- Add managed Codex hook wiring for `SessionStart` and `UserPromptSubmit` by generating `hooks.json`, enabling the official `codex_hooks` feature flag, and keeping turn-complete notify on the native Codex path for compatibility.
+- Wait for managed Codex startup through hook state when available, but fall back to the existing ready-surface detection so `orche open --notify ... --agent codex` no longer hangs when the local Codex build misses the startup hook.
+- Generate runtime notify hook scripts with the current `orche` bootstrap command and active XDG paths baked in, so Codex hook subprocesses report back to the same local `orche` state even when the agent sanitizes environment variables.
+- Add regression coverage for managed Codex hook/runtime generation, managed startup waiting, and the Codex managed launch command.
+
+## v0.4.47 - 2026-04-07
+
+- Disable Codex startup update checks inside `orche` managed runtimes by writing the official `check_for_update_on_startup = false` setting into the generated managed `config.toml`.
+- Suppress Codex's rate-limit model switch reminder inside managed runtimes by writing `[notice].hide_rate_limit_model_nudge = true`.
+- Keep the user's source `~/.codex/config.toml` behavior intact while continuing to mirror trust and notify settings into the isolated managed runtime.
+- Add regression coverage to ensure managed Codex homes override these managed-only prompts without mutating existing source-level preferences.
+
 ## v0.4.46 - 2026-04-07
 
 - Remove watchdog-driven `completed` notifications so watchdog only reports degraded states such as `stalled`, `needs-input`, and `failed`.

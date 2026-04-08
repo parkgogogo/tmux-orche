@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from paths import data_dir
+from tls import urlopen
 
 
 DEFAULT_RELEASE_REPO = "parkgogogo/tmux-orche"
@@ -233,7 +234,7 @@ def resolve_version(repo: str, requested_version: Optional[str]) -> str:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urlopen(request, timeout=30) as response:
             payload = json.load(response)
     except urllib.error.URLError as exc:
         raise SelfUpdateError(f"Failed to resolve latest release from {repo}") from exc
@@ -257,7 +258,7 @@ def download_release_archive(*, repo: str, version: str, target: str, destinatio
         headers={"User-Agent": "orche-self-update"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as handle:
+        with urlopen(request, timeout=60) as response, destination.open("wb") as handle:
             shutil.copyfileobj(response, handle)
     except urllib.error.URLError as exc:
         raise SelfUpdateError(

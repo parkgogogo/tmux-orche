@@ -104,7 +104,9 @@ orche open \
 orche prompt repo-worker "重构 auth 模块"
 ```
 
-![Claude + Codex 协作](./assets/orche-scene-claude-codex.png)
+![Claude + Codex 协作](./assets/b9f91b78-1852-453a-8b0d-2cae29185174.png)
+
+*上图展示了一个 Codex supervisor 同时调用 2 个 Codex 和 2 个 Claude agent 进行并行 code review 的场景。*
 
 也可以反过来：Codex 写代码，Claude 做 review。
 

@@ -104,7 +104,9 @@ orche open \
 orche prompt repo-worker "refactor the auth module"
 ```
 
-![Claude + Codex workflow](./assets/orche-scene-claude-codex.png)
+![Claude + Codex workflow](./assets/b9f91b78-1852-453a-8b0d-2cae29185174.png)
+
+*The image above shows a Codex supervisor using 2 Codex and 2 Claude agents to simultaneously perform code review.*
 
 Or reverse the roles: Codex writes, Claude reviews.
 

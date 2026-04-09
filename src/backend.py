@@ -471,6 +471,11 @@ def next_window_index(session_name: str) -> int:
     return (max(indexes) + 1) if indexes else 0
 
 
+def _tmux_window_index_in_use(exc: subprocess.CalledProcessError) -> bool:
+    detail = ((exc.stderr or exc.stdout or "")).strip().lower()
+    return "index " in detail and " in use" in detail
+
+
 def list_panes(target: Optional[str] = None) -> List[Dict[str, str]]:
     args = ["list-panes"]
     if target:
@@ -1515,20 +1520,30 @@ def _inline_slot_value(value: Any) -> Optional[int]:
 
 
 def _create_temp_inline_pane(*, tmux_session: str, cwd: Path) -> Dict[str, str]:
-    result = tmux(
-        "new-window",
-        "-d",
-        "-t",
-        tmux_session,
-        "-c",
-        str(cwd),
-        "-P",
-        "-F",
-        _tmux_join_fields("#{session_name}", "#{pane_id}", "#{window_id}", "#{window_name}"),
-        check=True,
-        capture=True,
-    )
-    return _pane_record_from_tmux_output(result.stdout)
+    last_error: Optional[subprocess.CalledProcessError] = None
+    for _attempt in range(3):
+        target = f"{tmux_session}:{next_window_index(tmux_session)}"
+        try:
+            result = tmux(
+                "new-window",
+                "-d",
+                "-t",
+                target,
+                "-c",
+                str(cwd),
+                "-P",
+                "-F",
+                _tmux_join_fields("#{session_name}", "#{pane_id}", "#{window_id}", "#{window_name}"),
+                check=True,
+                capture=True,
+            )
+            return _pane_record_from_tmux_output(result.stdout)
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            if not _tmux_window_index_in_use(exc):
+                raise
+    assert last_error is not None
+    raise last_error
 
 
 def _inline_group_sessions(

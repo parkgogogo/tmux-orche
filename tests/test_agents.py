@@ -1068,13 +1068,56 @@ def test_ensure_pane_inline_mode_splits_current_tmux_session(xdg_runtime, tmp_pa
     assert meta["host_pane_id"] == "%1"
     assert meta["tmux_host_session"] == "orche-reviewer"
     assert any(
-        call[:4] == ("new-window", "-d", "-t", "orche-reviewer")
+        call[:4] == ("new-window", "-d", "-t", "orche-reviewer:0")
         for call in tmux_calls
     )
     assert any(
         call[:8] == ("join-pane", "-d", "-h", "-l", "25%", "-s", "%11", "-t")
         for call in tmux_calls
     )
+
+
+def test_create_temp_inline_pane_targets_next_window_index_and_retries_on_conflict(
+    xdg_runtime, tmp_path, monkeypatch
+):
+    tmux_calls = []
+    listed_indexes = iter(["0\n", "0\n1\n"])
+
+    def fake_tmux(*args, **kwargs):
+        tmux_calls.append(args)
+        if args[:4] == ("list-windows", "-t", "orche-reviewer", "-F"):
+            return subprocess.CompletedProcess(["tmux", *args], 0, next(listed_indexes), "")
+        if args[:4] == ("new-window", "-d", "-t", "orche-reviewer:1"):
+            raise subprocess.CalledProcessError(
+                1,
+                ["tmux", *args],
+                output="",
+                stderr="create window failed: index 1 in use",
+            )
+        if args[:4] == ("new-window", "-d", "-t", "orche-reviewer:2"):
+            return subprocess.CompletedProcess(
+                ["tmux", *args],
+                0,
+                f"orche-reviewer{backend.TMUX_PANE_OUTPUT_SEPARATOR}%12{backend.TMUX_PANE_OUTPUT_SEPARATOR}"
+                f"@4{backend.TMUX_PANE_OUTPUT_SEPARATOR}main\n",
+                "",
+            )
+        return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    pane = backend._create_temp_inline_pane(tmux_session="orche-reviewer", cwd=tmp_path)
+
+    assert pane["pane_id"] == "%12"
+    assert (
+        ("new-window", "-d", "-t", "orche-reviewer:1", "-c", str(tmp_path), "-P", "-F",
+         f"#{'{'}session_name{'}'}{backend.TMUX_PANE_OUTPUT_SEPARATOR}"
+         f"#{'{'}pane_id{'}'}{backend.TMUX_PANE_OUTPUT_SEPARATOR}"
+         f"#{'{'}window_id{'}'}{backend.TMUX_PANE_OUTPUT_SEPARATOR}"
+         f"#{'{'}window_name{'}'}")
+        in tmux_calls
+    )
+    assert any(call[:4] == ("new-window", "-d", "-t", "orche-reviewer:2") for call in tmux_calls)
 
 
 def test_ensure_pane_dedicated_mode_uses_new_session_output_for_new_sessions(xdg_runtime, tmp_path, monkeypatch):

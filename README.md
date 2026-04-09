@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  [中文](README.zh.md) · [Install Guide](install.md) · [Docs](./docs)
+  <a href="README.zh.md">中文</a> · <a href="install.md">Install Guide</a> · <a href="./docs">Docs</a>
 </p>
 
 ## What is tmux-orche?

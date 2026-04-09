@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.56 - 2026-04-09
+
+- Add `orche open --prompt "..."` so managed Claude and Codex workers can receive the first task as part of session creation instead of requiring a follow-up `orche prompt`.
+- Wait an extra 2 seconds after managed Claude `SessionStart(startup)` readiness before sending the first prompt, reducing the inline-open race where Claude's TUI was not yet promptable.
+- Wait for Claude's `UserPromptSubmit` hook acknowledgment after sending prompts in managed sessions, so the CLI only reports success after Claude has accepted the prompt.
+- Add regression coverage for the managed Claude startup grace period, prompt-accept acknowledgment, and the new `open --prompt` CLI path.
+
 ## v0.4.48 - 2026-04-08
 
 - Add managed Codex hook wiring for `SessionStart` and `UserPromptSubmit` by generating `hooks.json`, enabling the official `codex_hooks` feature flag, and keeping turn-complete notify on the native Codex path for compatibility.

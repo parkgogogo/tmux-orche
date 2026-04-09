@@ -36,6 +36,9 @@ LEGACY_TMUX_SESSION = "orche-smux"
 DEFAULT_CAPTURE_LINES = 200
 INLINE_PANE_PERCENT = 33
 STARTUP_TIMEOUT = 90.0
+CLAUDE_STARTUP_GRACE_SECONDS = 2.0
+CLAUDE_PROMPT_ACK_TIMEOUT = 15.0
+CLAUDE_PROMPT_ACK_POLL_INTERVAL = 0.1
 WATCHDOG_CAPTURE_LINES = DEFAULT_CAPTURE_LINES
 NOTIFY_TAIL_LINES = 20
 WATCHDOG_POLL_INTERVAL = 3.0
@@ -1664,6 +1667,11 @@ def wait_for_managed_startup_ready(
         startup = meta.get("startup") if isinstance(meta.get("startup"), dict) else {}
         startup_state = str(startup.get("state") or "").strip().lower()
         if startup_state == "ready":
+            if plugin.name == "claude":
+                ready_at = float(startup.get("ready_at") or startup.get("updated_at") or startup.get("started_at") or 0.0)
+                if ready_at > 0 and (time.time() - ready_at) < CLAUDE_STARTUP_GRACE_SECONDS:
+                    time.sleep(0.1)
+                    continue
             return pane_id
         if startup_state == "blocked":
             blocked_reason = str(startup.get("blocked_reason") or "").strip()
@@ -2185,6 +2193,26 @@ def mark_pending_turn_prompt_accepted(session: str, *, source: str = "user-promp
         save_meta(session, meta)
     touch_session_event(session, source=f"prompt-ack:{source}")
     return dict(prompt_ack)
+
+
+def wait_for_prompt_ack(
+    session: str,
+    *,
+    turn_id: str,
+    prompt: str,
+    timeout: float = CLAUDE_PROMPT_ACK_TIMEOUT,
+) -> Dict[str, Any]:
+    deadline = time.time() + timeout
+    while time.time() <= deadline:
+        meta = load_meta(session)
+        _turn_key, turn = _current_turn_entry(meta, turn_id=turn_id, prompt=prompt, allow_fallback=False)
+        prompt_ack = turn.get("prompt_ack") if isinstance(turn.get("prompt_ack"), dict) else {}
+        if str(prompt_ack.get("state") or "").strip().lower() == "accepted":
+            return dict(prompt_ack)
+        time.sleep(CLAUDE_PROMPT_ACK_POLL_INTERVAL)
+    raise OrcheError(
+        f"Timed out waiting for Claude to accept the prompt in {session}; the prompt may have been submitted before the TUI was ready"
+    )
 
 
 def claim_turn_notification(
@@ -3000,9 +3028,10 @@ def send_prompt(
             agent,
             approve_all=approve_all,
         )
+    meta = load_meta(session)
+    wait_for_ack = plugin.name == "claude" and runtime_home_managed_from_meta(meta) and session_launch_mode(meta) != "native"
     before_capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES)
     turn_id = uuid.uuid4().hex[:12]
-    meta = load_meta(session)
     meta["pending_turn"] = {
         "turn_id": turn_id,
         "prompt": prompt,
@@ -3032,6 +3061,8 @@ def send_prompt(
     except Exception as exc:  # pragma: no cover
         log_exception("watchdog.start.error", exc, session=session, turn_id=turn_id)
     append_action_history(session, cwd, agent, "prompt", prompt=prompt, pane_id=pane_id)
+    if wait_for_ack:
+        wait_for_prompt_ack(session, turn_id=turn_id, prompt=prompt)
     return pane_id
 
 

@@ -610,11 +610,14 @@ def open_session(
     cwd: Optional[Path] = typer.Option(None, callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help="Working directory for the session. Defaults to the current directory."),
     name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-<random>."),
     notify: Optional[str] = typer.Option(None, "--notify", help="Notify target in the form discord:<channel-id> or tmux:<session>."),
+    prompt: Optional[str] = typer.Option(None, "--prompt", help="Prompt text to send immediately after opening a managed session."),
 ) -> None:
     try:
         resolved_cwd = _resolve_path(cwd or _default_cwd(), must_exist=True, require_dir=True)
         if resolved_cwd is None:
             raise OrcheError("Failed to resolve cwd")
+        if prompt is not None and ctx.args:
+            raise OrcheError("open does not support combining --prompt with raw agent args")
         session, _pane_id = _open_session(
             cwd=resolved_cwd,
             agent=agent,
@@ -622,6 +625,8 @@ def open_session(
             notify=notify,
             cli_args=list(ctx.args),
         )
+        if prompt is not None:
+            send_prompt(session, resolved_cwd, agent, prompt)
         _print_action_ok("open", session=session)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)

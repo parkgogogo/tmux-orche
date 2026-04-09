@@ -1153,6 +1153,31 @@ def test_open_rejects_notify_when_raw_agent_args_are_present(xdg_runtime):
     assert "open does not support combining --notify with raw agent args" in result.output
 
 
+def test_open_rejects_prompt_when_raw_agent_args_are_present(xdg_runtime):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "open",
+            "--cwd",
+            "~/project",
+            "--agent",
+            "claude",
+            "--prompt",
+            "review auth changes",
+            "--",
+            "--print",
+            "--help",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "open does not support combining --prompt with raw agent args" in result.output
+
+
 def test_attach_command_uses_session_name_positionally(xdg_runtime, monkeypatch):
     runner = CliRunner()
     recorded: dict[str, object] = {}
@@ -1297,6 +1322,45 @@ def test_prompt_command_uses_positionals(xdg_runtime, monkeypatch):
         "message": "review auth changes",
     }
     assert "prompt ok: session=demo-session" in result.output
+
+
+def test_open_command_supports_initial_prompt(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(cli, "_open_session", lambda **kwargs: ("demo-session", "%1"))
+    monkeypatch.setattr(
+        cli,
+        "send_prompt",
+        lambda session, cwd, agent, message: captured.update(
+            {"session": session, "cwd": cwd, "agent": agent, "message": message}
+        )
+        or "%1",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "open",
+            "--cwd",
+            "~/project",
+            "--agent",
+            "claude",
+            "--prompt",
+            "review auth changes",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured == {
+        "session": "demo-session",
+        "cwd": project_dir.resolve(),
+        "agent": "claude",
+        "message": "review auth changes",
+    }
+    assert "open ok: session=demo-session" in result.output
 
 
 def test_input_and_key_commands_use_positionals(xdg_runtime, monkeypatch):

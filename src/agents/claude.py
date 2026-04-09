@@ -9,7 +9,7 @@ from pathlib import Path
 
 from paths import ensure_directories, locks_dir
 
-from .base import AgentPlugin, AgentRuntime
+from .base import AgentPlugin, AgentRuntime, BridgeIO
 from .common import (
     DEFAULT_RUNTIME_HOME_ROOT,
     ensure_orche_shim,
@@ -34,6 +34,7 @@ SOURCE_CONFIG_BACKUP_SUFFIX = ".orche.bak"
 DEFAULT_CLAUDE_COMMAND = "claude"
 DEFAULT_CLAUDE_SOURCE_CONFIG_PATH = Path.home() / ".claude.json"
 DEFAULT_CLAUDE_SOURCE_HOME = Path.home() / ".claude"
+CLAUDE_SUBMIT_SETTLE_SECONDS = 0.2
 
 
 def _compact_prompt_text(value: str) -> str:
@@ -341,6 +342,12 @@ class ClaudeAgent(AgentPlugin):
             serialized_settings,
         )
         return AgentRuntime(home=str(target.resolve()), managed=True, label=self.runtime_label)
+
+    def submit_prompt(self, session: str, prompt: str, *, bridge: BridgeIO) -> None:
+        if prompt:
+            bridge.type(session, prompt)
+            time.sleep(CLAUDE_SUBMIT_SETTLE_SECONDS)
+        bridge.keys(session, ["Enter"])
 
     def build_launch_command(
         self,

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import backend
 import pytest
+from agents.claude import CLAUDE_SUBMIT_SETTLE_SECONDS, ClaudeAgent
 from agents.codex import (
     CODEX_SUBMIT_SETTLE_MAX_SECONDS,
     CODEX_SUBMIT_SETTLE_MIN_SECONDS,
@@ -751,6 +752,79 @@ def test_wait_for_managed_startup_ready_falls_back_to_codex_ready_surface(xdg_ru
     assert backend.load_meta(session)["startup"]["ready_source"] == "ready-surface-fallback"
 
 
+def test_wait_for_managed_startup_ready_applies_claude_grace_period(xdg_runtime, tmp_path, monkeypatch):
+    session = "demo-claude-startup-grace"
+    backend.save_meta(
+        session,
+        {
+            "session": session,
+            "startup": {
+                "state": "ready",
+                "ready_at": 100.0,
+                "updated_at": 100.0,
+            },
+        },
+    )
+    plugin = backend.get_agent("claude")
+    now = {"value": 100.0}
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(backend.time, "time", lambda: now["value"])
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now["value"] += seconds
+
+    monkeypatch.setattr(backend.time, "sleep", fake_sleep)
+
+    pane_id = backend.wait_for_managed_startup_ready(session, plugin, "%1", tmp_path, timeout=5.0)
+
+    assert pane_id == "%1"
+    assert sum(sleeps) >= backend.CLAUDE_STARTUP_GRACE_SECONDS
+
+
+def test_wait_for_prompt_ack_accepts_last_completed_turn(xdg_runtime, monkeypatch):
+    session = "demo-claude-prompt-ack"
+    backend.save_meta(
+        session,
+        {
+            "session": session,
+            "pending_turn": {
+                "turn_id": "turn-1",
+                "prompt": "hello",
+                "prompt_ack": {
+                    "state": "pending",
+                    "accepted_at": 0.0,
+                    "source": "",
+                },
+            },
+        },
+    )
+    now = {"value": 0.0}
+
+    monkeypatch.setattr(backend.time, "time", lambda: now["value"])
+
+    def fake_sleep(seconds: float) -> None:
+        now["value"] += seconds
+        meta = backend.load_meta(session)
+        pending_turn = dict(meta["pending_turn"])
+        pending_turn["prompt_ack"] = {
+            "state": "accepted",
+            "accepted_at": now["value"],
+            "source": "user-prompt-submit",
+        }
+        meta["last_completed_turn"] = pending_turn
+        meta.pop("pending_turn", None)
+        backend.save_meta(session, meta)
+
+    monkeypatch.setattr(backend.time, "sleep", fake_sleep)
+
+    prompt_ack = backend.wait_for_prompt_ack(session, turn_id="turn-1", prompt="hello", timeout=1.0)
+
+    assert prompt_ack["state"] == "accepted"
+    assert prompt_ack["source"] == "user-prompt-submit"
+
+
 def test_codex_submit_prompt_waits_before_enter(monkeypatch):
     plugin = CodexAgent()
     bridge = FakeBridge()
@@ -765,6 +839,59 @@ def test_codex_submit_prompt_waits_before_enter(monkeypatch):
         ("keys", "demo-codex", ["Enter"]),
     ]
     assert sleeps == [codex_submit_settle_seconds("Reply with exactly DEBUG_TOKEN")]
+
+
+def test_claude_submit_prompt_waits_before_enter(monkeypatch):
+    plugin = ClaudeAgent()
+    bridge = FakeBridge()
+    sleeps: list[float] = []
+
+    monkeypatch.setattr("agents.claude.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    plugin.submit_prompt("demo-claude", "Reply with exactly DEBUG_TOKEN", bridge=bridge)
+
+    assert bridge.calls == [
+        ("type", "demo-claude", "Reply with exactly DEBUG_TOKEN"),
+        ("keys", "demo-claude", ["Enter"]),
+    ]
+    assert sleeps == [CLAUDE_SUBMIT_SETTLE_SECONDS]
+
+
+def test_send_prompt_waits_for_managed_claude_prompt_ack(xdg_runtime, tmp_path, monkeypatch):
+    session = "demo-claude-managed"
+    backend.save_meta(
+        session,
+        {
+            "session": session,
+            "agent": "claude",
+            "launch_mode": "managed",
+            "runtime_home_managed": True,
+        },
+    )
+    bridge = FakeBridge()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(backend, "BRIDGE", bridge)
+    monkeypatch.setattr(backend, "ensure_session", lambda *args, **kwargs: "%7")
+    monkeypatch.setattr(backend, "read_pane", lambda *args, **kwargs: "Claude Code")
+    monkeypatch.setattr(backend, "start_session_watchdog", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend, "append_action_history", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        backend,
+        "wait_for_prompt_ack",
+        lambda ack_session, **kwargs: captured.update({"session": ack_session, **kwargs}) or {"state": "accepted"},
+    )
+
+    pane_id = backend.send_prompt(session, tmp_path, "claude", "hello")
+
+    assert pane_id == "%7"
+    assert bridge.calls == [
+        ("type", session, "hello"),
+        ("keys", session, ["Enter"]),
+    ]
+    assert captured["session"] == session
+    assert captured["prompt"] == "hello"
+    assert captured["turn_id"]
 
 
 def test_codex_submit_prompt_skips_delay_for_empty_prompt(monkeypatch):

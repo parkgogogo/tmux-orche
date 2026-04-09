@@ -18,4 +18,8 @@ venv/
 
 # Testing
 .coverage
+.coverage.*
 .pytest_cache/
+
+# Crash reports
+nuitka-crash-report.xml

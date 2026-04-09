@@ -16,7 +16,7 @@ Do not use this skill for agent-to-agent reviewer/worker loops inside tmux. That
 ## Non-Negotiable Rules
 
 - Treat `notify` as the return path. If the worker must report back, open it with explicit `--notify discord:<channel-id>`.
-- Treat `prompt` as fire-and-forget. After `orche prompt`, do not keep the current turn open just to watch the worker.
+- Treat the first task as `open --prompt` and follow-up tasks as `prompt`. After `orche prompt`, do not keep the current turn open just to watch the worker.
 - Do not poll by default. Only inspect a worker if the user asked for progress, the worker likely needs input, or you need details for the next decision.
 - Use managed sessions for delegated work. A delegated worker that must report back is not a native session.
 - Do not invent routing. If you do not know the Discord channel id, stop and get it from the user or established context.
@@ -28,8 +28,8 @@ When OpenClaw delegates through `orche`, the session is the worker endpoint and 
 
 Your job is not to keep watching the pane. Your job is to:
 
-1. open a managed worker with explicit Discord notify
-2. send the task
+1. open a managed worker with explicit Discord notify and the first task
+2. reuse the session with `prompt` only for follow-up work
 3. leave the worker alone
 4. inspect only when a real decision requires it
 
@@ -40,21 +40,24 @@ If the worker does not need to report back, `orche` may not be the right tool fo
 Use this sequence unless the user explicitly wants something else:
 
 ```bash
-# 1. open a managed worker with an explicit Discord return path
-orche open --cwd /repo --agent codex --name repo-worker --notify discord:123456789012345678
+# 1. open a managed worker with an explicit Discord return path and first prompt
+orche open --cwd /repo --agent codex --name repo-worker --notify discord:123456789012345678 --prompt "analyze the failing tests and propose a fix"
 
-# 2. send work
-orche prompt repo-worker "analyze the failing tests and propose a fix"
-
-# 3. end the current turn unless you have unrelated work that does not depend on the worker
+# 2. end the current turn unless you have unrelated work that does not depend on the worker
 ```
 
-Default behavior after `prompt`:
+Default behavior after the first prompt:
 
 - do not busy-wait
 - do not keep the turn alive just to monitor output
 - if you have no independent work left, end the current turn immediately
 - when the worker reports back through `notify`, that notify becomes the next input to the supervisor loop
+
+For follow-up turns on the same worker, reuse the session:
+
+```bash
+orche prompt repo-worker "apply the approved fix and rerun the failing tests"
+```
 
 Later, inspect only if needed:
 
@@ -85,7 +88,7 @@ Rules:
 Managed session example:
 
 ```bash
-orche open --cwd /repo --agent codex --name repo-worker --notify discord:123456789012345678
+orche open --cwd /repo --agent codex --name repo-worker --notify discord:123456789012345678 --prompt "analyze the failing tests and propose a fix"
 ```
 
 Native sessions are for ad-hoc interactive work and are not the default here:
@@ -142,4 +145,5 @@ Avoid these:
 - attaching to every worker when `status` or `read` would be enough
 - using `input` for normal task delegation
 - combining raw agent args with `--notify`
+- combining raw agent args with `--prompt`
 - opening a second session for every tiny follow-up instead of reusing the existing named session

@@ -17,7 +17,7 @@ Do not use this skill when OpenClaw is the supervisor and the return path is Dis
 
 - Do not run delegated Codex or Claude workers in sandboxed or approval-gated mode. `orche` launches Codex with `--dangerously-bypass-approvals-and-sandbox` and Claude with `--dangerously-skip-permissions`; your workflow should assume the worker is unsandboxed.
 - Treat `notify` as the return path. If the worker must report back, open it with explicit `--notify tmux:<target-session>`.
-- Treat `prompt` as fire-and-forget. After `orche prompt`, do not keep the current turn open just to watch the worker. If you have no independent work left, end the current turn immediately and wait for `notify` to trigger the next turn.
+- Treat the first task as `open --prompt` and follow-up tasks as `prompt`. After `orche prompt`, do not keep the current turn open just to watch the worker. If you have no independent work left, end the current turn immediately and wait for `notify` to trigger the next turn.
 - Never guess the tmux notify target. Resolve it with `orche whoami` first.
 - When you open a tmux-routed worker from inside the current supervisor session, prefer the visible inline tmux pane workflow over creating a separate detached tmux session.
 - Use managed sessions for delegated workers. A delegated worker that must report back is not a native session.
@@ -30,7 +30,7 @@ Do not use this skill when OpenClaw is the supervisor and the return path is Dis
 
 It means:
 
-1. send the task with `orche prompt`
+1. send the first task with `orche open --prompt`, or use `orche prompt` when reusing an existing session
 2. if you have unrelated work, do that
 3. if you do not have unrelated work, end the current turn now
 4. let the worker's `notify` message become the input that starts the next turn
@@ -92,24 +92,27 @@ Use this sequence unless the user explicitly wants something else:
 # 1. resolve the current supervisor session
 current_session="$(orche whoami)"
 
-# 2. open a managed worker with an explicit tmux return path
-orche open --cwd /repo --agent codex --name repo-worker --notify "tmux:${current_session}"
+# 2. open a managed worker with an explicit tmux return path and first prompt
+orche open --cwd /repo --agent codex --name repo-worker --notify "tmux:${current_session}" --prompt "implement the parser refactor"
 
 # 3. let orche place the worker in a visible inline pane when possible
 
-# 4. send work
-orche prompt repo-worker "implement the parser refactor"
-
-# 5. end the current turn unless you have unrelated work that does not depend on the worker
+# 4. end the current turn unless you have unrelated work that does not depend on the worker
 ```
 
-Default behavior after `prompt`:
+Default behavior after the first prompt:
 
 - do not busy-wait
 - do not keep the turn alive just to monitor output
 - if you have no independent work left, end the current turn immediately
 - when the worker reports back through `notify`, that notify becomes the next input to the supervisor session
 - if the worker is acting as a reviewer, prefer a bounded prompt that tells it exactly when to stop
+
+For follow-up turns on the same worker, reuse the session:
+
+```bash
+orche prompt repo-worker "address the review comments in auth.py"
+```
 
 Later, inspect only if needed:
 
@@ -141,7 +144,7 @@ Managed session example:
 
 ```bash
 current_session="$(orche whoami)"
-orche open --cwd /repo --agent codex --name repo-worker --notify "tmux:${current_session}"
+orche open --cwd /repo --agent codex --name repo-worker --notify "tmux:${current_session}" --prompt "implement the parser refactor"
 ```
 
 Native sessions are for ad-hoc interactive work and are not the default here:
@@ -201,4 +204,5 @@ Avoid these:
 - attaching to every worker when `status` or `read` would be enough
 - using `input` for normal task delegation
 - combining raw agent args with `--notify`
+- combining raw agent args with `--prompt`
 - opening a second session for every tiny follow-up instead of reusing the existing named session

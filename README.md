@@ -1,4 +1,6 @@
-[中文](README.zh.md) · [Install Guide](install.md) · [Docs](./docs)
+<p align="center">
+  <img src="./assets/b9f91b78-1852-453a-8b0d-2cae29185174.png" alt="tmux-orche" width="100%">
+</p>
 
 <h1 align="center">tmux-orche</h1>
 
@@ -14,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="./assets/b9f91b78-1852-453a-8b0d-2cae29185174.png" alt="tmux-orche" width="80%">
+  [中文](README.zh.md) · [Install Guide](install.md) · [Docs](./docs)
 </p>
 
 ## What is tmux-orche?

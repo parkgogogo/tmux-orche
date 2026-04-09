@@ -243,10 +243,10 @@ def test_e2e_concurrent_tmux_bridge_notifications_serialize_same_target(e2e_cont
         second_marker,
     )
     first_block = (
-        f"orche notify\n  source session: {source_a}\n  event: completed\n  status: success\n  cwd: {REPO_ROOT}\n\n  {first_marker}"
+        f"orche notify\nsource session: {source_a}\nevent: completed\ncwd: {REPO_ROOT}\n\n{first_marker}\n\nstatus: success"
     )
     second_block = (
-        f"orche notify\n  source session: {source_c}\n  event: completed\n  status: success\n  cwd: {REPO_ROOT}\n\n  {second_marker}"
+        f"orche notify\nsource session: {source_c}\nevent: completed\ncwd: {REPO_ROOT}\n\n{second_marker}\n\nstatus: success"
     )
     assert first_block in output
     assert second_block in output

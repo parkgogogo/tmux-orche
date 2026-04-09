@@ -81,3 +81,27 @@ def test_deliver_notify_to_session_allows_parallel_writes_to_different_targets(x
     latest_start = max(start for _session, start, _end in intervals)
     earliest_end = min(end for _session, _start, end in intervals)
     assert latest_start < earliest_end
+
+
+def test_deliver_notify_to_session_uses_target_agent_submit_strategy(xdg_runtime, monkeypatch):
+    events = []
+
+    class FakePlugin:
+        def submit_prompt(self, session: str, prompt: str, *, bridge) -> None:
+            events.append(("submit", session, prompt))
+            bridge.type(session, prompt)
+            bridge.keys(session, ["Enter"])
+
+    monkeypatch.setattr(backend, "bridge_resolve", lambda session: "%42")
+    monkeypatch.setattr(backend, "load_meta", lambda session: {"agent": "claude"})
+    monkeypatch.setattr(backend, "get_agent", lambda name: FakePlugin())
+    monkeypatch.setattr(backend, "bridge_type", lambda session, text: events.append(("type", session, text)))
+    monkeypatch.setattr(backend, "bridge_keys", lambda session, keys: events.append(("keys", session, list(keys))))
+
+    backend.deliver_notify_to_session("target-session", "hello")
+
+    assert events == [
+        ("submit", "target-session", "hello"),
+        ("type", "target-session", "hello"),
+        ("keys", "target-session", ["Enter"]),
+    ]

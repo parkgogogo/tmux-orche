@@ -34,7 +34,7 @@ def test_tmux_bridge_notifier_delivers_prompt_through_backend_helper(monkeypatch
     assert captured == [
         (
             "target-session",
-            "orche notify\nsource session: source-session\nevent: completed\nstatus: success\ncwd: /tmp/repo\n\nreview source session output",
+            "orche notify\nsource session: source-session\nevent: completed\ncwd: /tmp/repo\n\nreview source session output\n\nstatus: success",
         )
     ]
 
@@ -55,7 +55,7 @@ def test_tmux_bridge_notifier_uses_default_prefix_for_empty_summary(monkeypatch)
     )
 
     assert captured == [
-        "orche notify\nsource session: -\nevent: completed\nstatus: success\ncwd: -\n\nCodex turn complete"
+        "orche notify\nsource session: -\nevent: completed\ncwd: -\n\nCodex turn complete\n\nstatus: success"
     ]
 
 
@@ -82,17 +82,13 @@ def test_tmux_bridge_notifier_appends_recent_output(monkeypatch):
     )
 
     assert captured == [
-        "orche notify\nsource session: source\nevent: startup-blocked\nstatus: startup-blocked\ncwd: /tmp/repo\n\nCodex startup blocked\n\nRecent output:\nline1\nline2"
+        "orche notify\nsource session: source\nevent: startup-blocked\ncwd: /tmp/repo\n\nCodex startup blocked\n\nRecent output:\nline1\nline2\n\nstatus: startup-blocked"
     ]
 
 
-def test_tmux_bridge_notifier_renders_single_line_prompt_for_claude_target(monkeypatch):
+def test_tmux_bridge_notifier_preserves_multiline_prompt_for_claude_target(monkeypatch):
     captured = []
 
-    monkeypatch.setattr(
-        "notify.tmux_bridge.load_meta",
-        lambda session: {"agent": "claude"} if session == "target-session" else {},
-    )
     monkeypatch.setattr(
         "notify.tmux_bridge.deliver_notify_to_session",
         lambda session, prompt: captured.append((session, prompt)) or "%42",
@@ -115,7 +111,7 @@ def test_tmux_bridge_notifier_renders_single_line_prompt_for_claude_target(monke
     assert captured == [
         (
             "target-session",
-            "orche notify | source=source-session | event=completed | status=success | summary=review source session output",
+            "orche notify\nsource session: source-session\nevent: completed\ncwd: /tmp/repo\n\nreview source session output\n\nRecent output:\nline1\nline2\n\nstatus: success",
         )
     ]
 

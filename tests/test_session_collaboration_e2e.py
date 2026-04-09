@@ -225,7 +225,7 @@ def test_e2e_worker_session_notifies_reviewer_with_real_turn(
     prompt_result = e2e_context.run(["prompt", worker, prompt])
     _assert_ok(prompt_result)
 
-    source_marker = f"source={worker}" if reviewer_agent == "claude" else f"source session: {worker}"
+    source_marker = f"source session: {worker}"
     reviewer_output = _wait_for_output(
         e2e_context.env,
         reviewer,
@@ -239,10 +239,6 @@ def test_e2e_worker_session_notifies_reviewer_with_real_turn(
         token,
     )
 
-    if reviewer_agent == "claude":
-        assert "event=" in reviewer_output
-        assert "status=" in reviewer_output
-    else:
-        assert "event:" in reviewer_output
-        assert "status:" in reviewer_output
+    assert "event:" in reviewer_output
+    assert "status:" in reviewer_output
     assert token in worker_output

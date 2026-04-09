@@ -238,6 +238,13 @@ def notify_target_lock_path(session: str) -> Path:
     return locks_dir() / f"{session_key(session)}.notify.lock"
 
 
+def inline_host_lock_path(tmux_session: str, host_pane_id: str = "") -> Path:
+    scope = tmux_session.strip()
+    host = host_pane_id.strip()
+    key = f"{scope}-{host}" if host else scope
+    return locks_dir() / f"inline-host-{session_key(key or 'default')}.lock"
+
+
 def run(
     cmd: List[str],
     *,
@@ -1211,9 +1218,8 @@ def update_runtime_config(
 
 
 @contextlib.contextmanager
-def session_lock(session: str, *, timeout: float = 5.0):
+def _path_lock(path: Path, *, timeout: float, error_message: str):
     ensure_directories()
-    path = lock_path(session)
     deadline = time.time() + timeout
     while True:
         try:
@@ -1221,7 +1227,7 @@ def session_lock(session: str, *, timeout: float = 5.0):
             break
         except FileExistsError:
             if time.time() > deadline:
-                raise OrcheError(f"Timed out waiting for session lock: {session}")
+                raise OrcheError(error_message)
             time.sleep(0.1)
     try:
         os.write(fd, str(os.getpid()).encode())
@@ -1235,27 +1241,25 @@ def session_lock(session: str, *, timeout: float = 5.0):
 
 
 @contextlib.contextmanager
-def target_session_io_lock(session: str, *, timeout: float = 5.0):
-    ensure_directories()
-    path = notify_target_lock_path(session)
-    deadline = time.time() + timeout
-    while True:
-        try:
-            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            break
-        except FileExistsError:
-            if time.time() > deadline:
-                raise OrcheError(f"Timed out waiting for notify target lock: {session}")
-            time.sleep(0.1)
-    try:
-        os.write(fd, str(os.getpid()).encode())
+def session_lock(session: str, *, timeout: float = 5.0):
+    path = lock_path(session)
+    with _path_lock(path, timeout=timeout, error_message=f"Timed out waiting for session lock: {session}"):
         yield
-    finally:
-        os.close(fd)
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+
+
+@contextlib.contextmanager
+def target_session_io_lock(session: str, *, timeout: float = 5.0):
+    path = notify_target_lock_path(session)
+    with _path_lock(path, timeout=timeout, error_message=f"Timed out waiting for notify target lock: {session}"):
+        yield
+
+
+@contextlib.contextmanager
+def inline_host_lock(tmux_session: str, host_pane_id: str = "", *, timeout: float = 5.0):
+    path = inline_host_lock_path(tmux_session, host_pane_id)
+    scope = host_pane_id.strip() or tmux_session.strip() or "inline-host"
+    with _path_lock(path, timeout=timeout, error_message=f"Timed out waiting for inline host lock: {scope}"):
+        yield
 
 
 def bridge_name_pane(pane_id: str, session: str) -> None:
@@ -1340,8 +1344,9 @@ def deliver_notify_to_session(session: str, prompt: str) -> str:
         pane_id = bridge_resolve(target_session)
         if not pane_id:
             raise OrcheError(f"notify target session not found: {target_session}")
-        bridge_type(target_session, prompt)
-        bridge_keys(target_session, ["Enter"])
+        target_meta = load_meta(target_session)
+        target_agent = str(target_meta.get("agent") or "").strip().lower() or "codex"
+        get_agent(target_agent).submit_prompt(target_session, prompt, bridge=BRIDGE)
         return pane_id
 
 
@@ -1792,12 +1797,36 @@ def ensure_pane(
             inline_tmux_session = resolved_tmux_host_session or str(meta.get("tmux_session") or "").strip() or _current_tmux_value("#{session_name}")
             if not inline_tmux_session:
                 raise OrcheError("Inline pane mode requires a live tmux session")
-            pane, resolved_host_pane_id = create_inline_pane(
-                session,
-                cwd,
-                tmux_session=inline_tmux_session,
-                host_pane_id=resolved_host_pane_id or _current_tmux_value("#{pane_id}"),
-            )
+            inline_host_pane_id = resolved_host_pane_id or _current_tmux_value("#{pane_id}")
+            with inline_host_lock(inline_tmux_session, inline_host_pane_id):
+                pane, resolved_host_pane_id = create_inline_pane(
+                    session,
+                    cwd,
+                    tmux_session=inline_tmux_session,
+                    host_pane_id=inline_host_pane_id,
+                )
+                pane_id = normalize_pane(session, cwd, pane)
+                meta.update(
+                    {
+                        "backend": BACKEND,
+                        "session": session,
+                        "cwd": str(cwd),
+                        "agent": agent,
+                        "tmux_session": pane["session_name"],
+                        "pane_id": pane_id,
+                        "window_id": pane["window_id"],
+                        "window_name": pane["window_name"],
+                        "tmux_mode": resolved_tmux_mode,
+                        "host_pane_id": resolved_host_pane_id,
+                        "tmux_host_session": resolved_tmux_host_session or pane["session_name"],
+                        "last_seen_at": time.time(),
+                    }
+                )
+                inline_slot = str(pane.get("inline_slot") or "").strip()
+                if inline_slot:
+                    meta["inline_slot"] = int(inline_slot)
+                save_meta(session, meta)
+                return pane_id
         else:
             pane = create_dedicated_pane(session, cwd)
         pane_id = normalize_pane(session, cwd, pane)

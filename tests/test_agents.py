@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sys
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import backend
@@ -238,6 +240,34 @@ def test_ensure_managed_codex_home_preserves_existing_hooks_json(xdg_runtime, tm
     assert hooks_payload["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "/bin/echo existing-session-start-hook"
     assert "--session repo-codex-main" in hooks_payload["hooks"]["SessionStart"][1]["hooks"][0]["command"]
     assert hooks_payload["hooks"]["Stop"][0]["hooks"][0]["command"] == "/bin/echo existing-stop-hook"
+
+
+def test_ensure_managed_codex_home_preserves_state_files_needed_for_login(xdg_runtime, tmp_path, monkeypatch):
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+
+    source_home = tmp_path / ".codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+    (source_home / "state_5.sqlite").write_text("state", encoding="utf-8")
+    (source_home / "state_5.sqlite-wal").write_text("state-wal", encoding="utf-8")
+    (source_home / "logs_1.sqlite").write_text("logs", encoding="utf-8")
+    (source_home / "history.jsonl").write_text("history\n", encoding="utf-8")
+
+    target = Path(
+        backend.ensure_managed_codex_home(
+            "repo-codex-main",
+            cwd=tmp_path,
+            discord_channel_id=None,
+        )
+    )
+
+    assert (target / "state_5.sqlite").read_text(encoding="utf-8") == "state"
+    assert (target / "state_5.sqlite-wal").read_text(encoding="utf-8") == "state-wal"
+    assert not (target / "logs_1.sqlite").exists()
+    assert not (target / "history.jsonl").exists()
 
 
 def test_ensure_managed_claude_home_preserves_existing_source_config(xdg_runtime, tmp_path, monkeypatch):
@@ -1118,6 +1148,86 @@ def test_create_temp_inline_pane_targets_next_window_index_and_retries_on_confli
         in tmux_calls
     )
     assert any(call[:4] == ("new-window", "-d", "-t", "orche-reviewer:2") for call in tmux_calls)
+
+
+def test_ensure_pane_inline_mode_serializes_host_creation_until_meta_is_saved(
+    xdg_runtime, tmp_path, monkeypatch
+):
+    original_save_meta = backend.save_meta
+    first_started = threading.Event()
+    errors: list[BaseException] = []
+    second_observed_first_meta: dict[str, bool] = {}
+    state_lock = threading.Lock()
+    active_creates = 0
+    max_active_creates = 0
+
+    monkeypatch.setattr(backend, "bridge_name_pane", lambda pane_id, session: None)
+    monkeypatch.setattr(
+        backend,
+        "tmux",
+        lambda *args, **kwargs: subprocess.CompletedProcess(["tmux", *args], 0, "", ""),
+    )
+
+    def fake_create_inline_pane(session, cwd, *, tmux_session, host_pane_id=""):
+        nonlocal active_creates, max_active_creates
+        pane_id = "%11" if session == "worker-1" else "%12"
+        with state_lock:
+            active_creates += 1
+            max_active_creates = max(max_active_creates, active_creates)
+            if session == "worker-1":
+                first_started.set()
+            elif session == "worker-2":
+                second_observed_first_meta["seen"] = bool(backend.load_meta("worker-1").get("pane_id"))
+        time.sleep(0.05)
+        with state_lock:
+            active_creates -= 1
+        return (
+            {
+                "pane_id": pane_id,
+                "session_name": "orche-reviewer",
+                "window_id": f"@{pane_id[1:]}",
+                "window_name": "main",
+                "pane_dead": "0",
+                "inline_slot": "0" if session == "worker-1" else "1",
+            },
+            "%host",
+        )
+
+    def delayed_save_meta(session, meta):
+        if session == "worker-1" and meta.get("pane_id") == "%11":
+            time.sleep(0.15)
+        return original_save_meta(session, meta)
+
+    monkeypatch.setattr(backend, "create_inline_pane", fake_create_inline_pane)
+    monkeypatch.setattr(backend, "save_meta", delayed_save_meta)
+
+    def worker(session_name: str) -> None:
+        try:
+            backend.ensure_pane(
+                session_name,
+                tmp_path,
+                "codex",
+                tmux_mode="inline-pane",
+                host_pane_id="%host",
+                tmux_host_session="orche-reviewer",
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread_one = threading.Thread(target=worker, args=("worker-1",))
+    thread_two = threading.Thread(target=worker, args=("worker-2",))
+
+    thread_one.start()
+    assert first_started.wait(timeout=1.0)
+    thread_two.start()
+    thread_one.join(timeout=2.0)
+    thread_two.join(timeout=2.0)
+
+    assert not errors
+    assert max_active_creates == 1
+    assert second_observed_first_meta["seen"] is True
+    assert backend.load_meta("worker-1")["host_pane_id"] == "%host"
+    assert backend.load_meta("worker-2")["host_pane_id"] == "%host"
 
 
 def test_ensure_pane_dedicated_mode_uses_new_session_output_for_new_sessions(xdg_runtime, tmp_path, monkeypatch):

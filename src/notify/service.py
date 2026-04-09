@@ -11,6 +11,8 @@ from .models import DeliveryResult, NotifyEvent, ResolvedRoute
 from .payload import build_message_from_payload
 from .registry import DEFAULT_REGISTRY, NotifierRegistry
 
+MAX_NOTIFY_WORKERS = 10
+
 
 class NotificationService:
     def __init__(
@@ -44,7 +46,7 @@ class NotificationService:
             if created:
                 notifiers[provider] = created[0]
         results: list[DeliveryResult] = []
-        with ThreadPoolExecutor(max_workers=max(1, len(routes))) as executor:
+        with ThreadPoolExecutor(max_workers=max(1, min(MAX_NOTIFY_WORKERS, len(routes)))) as executor:
             future_map = {}
             for route in routes:
                 notifier = notifiers.get(route.provider)

@@ -1138,6 +1138,65 @@ def test_expire_managed_sessions_skips_child_while_parent_alive(xdg_runtime, mon
     assert backend.load_meta("child")["parent_session"] == "parent"
 
 
+def test_expire_managed_sessions_continues_when_close_raises(xdg_runtime, monkeypatch):
+    now = time.time()
+    backend.save_config({"_comment": "runtime", "managed_session_ttl_seconds": 60})
+    backend.save_meta(
+        "broken",
+        {
+            "session": "broken",
+            "agent": "codex",
+            "pane_id": "%1",
+            "launch_mode": "managed",
+            "last_event_at": now - 120,
+            "expires_after_seconds": 60,
+        },
+    )
+    backend.save_meta(
+        "healthy",
+        {
+            "session": "healthy",
+            "agent": "codex",
+            "pane_id": "%2",
+            "launch_mode": "managed",
+            "last_event_at": now - 120,
+            "expires_after_seconds": 60,
+        },
+    )
+
+    monkeypatch.setattr(backend, "session_metadata_is_live", lambda session, payload=None: True)
+
+    def fake_close_session_tree(session, *, reason="", _visited=None):
+        if session == "broken":
+            raise RuntimeError("boom")
+        backend.remove_meta(session)
+        return "-"
+
+    monkeypatch.setattr(backend, "close_session_tree", fake_close_session_tree)
+
+    expired = backend.expire_managed_sessions(now=now)
+
+    assert expired == ["healthy"]
+    assert backend.load_meta("broken")["session"] == "broken"
+
+
+def test_update_command_skips_expire_when_tmux_missing(xdg_runtime, monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None if name == "tmux" else "/usr/bin/env")
+    monkeypatch.setattr(cli, "expire_managed_sessions", lambda: (_ for _ in ()).throw(RuntimeError("should not run")))
+
+    class Result:
+        version = "v9.9.9"
+        target = "linux-x64"
+        link_path = Path("/tmp/orche")
+        updated = True
+
+    monkeypatch.setattr(cli, "perform_self_update", lambda **kwargs: Result())
+
+    result = CliRunner().invoke(app, ["update", "--version", "v9.9.9"])
+
+    assert result.exit_code == 0
+
+
 def test_open_auto_names_inline_child_sessions_from_parent(xdg_runtime, monkeypatch, tmp_path):
     captured: dict[str, str] = {}
 

@@ -66,7 +66,7 @@ def test_notify_hidden_command_sends_message_with_explicit_channel(xdg_runtime, 
     assert result.exit_code == 0
     assert "notify ok: provider=discord detail=200" in result.output
     assert fake_client.requests[0]["url"].endswith("/channels/1234567890/messages")
-    assert fake_client.requests[0]["json_body"]["content"].startswith("<@1475734550813605959> Done")
+    assert fake_client.requests[0]["json_body"]["content"].startswith("Done")
 
 
 def test_notify_hidden_command_session_start_updates_internal_startup_state_without_delivery(xdg_runtime):

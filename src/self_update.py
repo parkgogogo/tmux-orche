@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from json_utils import JSONInputTooLargeError, read_json_file
 from paths import data_dir
 from tls import urlopen
 
@@ -56,8 +57,8 @@ def load_install_metadata() -> Optional[dict[str, Any]]:
     if not path.exists():
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        payload = read_json_file(path)
+    except (json.JSONDecodeError, JSONInputTooLargeError) as exc:
         raise SelfUpdateError(f"Invalid install metadata: {path}") from exc
     if not isinstance(payload, dict):
         raise SelfUpdateError(f"Invalid install metadata: {path}")
@@ -295,6 +296,10 @@ def _resolve_extracted_source(temp_path: Path) -> Path:
 def _safe_extract_archive(archive: tarfile.TarFile, destination: Path) -> None:
     root = destination.resolve()
     for member in archive.getmembers():
+        if member.issym() or member.islnk() or member.isfifo() or member.ischr() or member.isblk():
+            raise SelfUpdateError(f"Refusing to extract unsupported archive member type: {member.name}")
+        if not member.isfile() and not member.isdir():
+            raise SelfUpdateError(f"Refusing to extract unsupported archive member type: {member.name}")
         member_path = (destination / member.name).resolve()
         if member_path != root and root not in member_path.parents:
             raise SelfUpdateError(f"Refusing to extract archive member outside target directory: {member.name}")

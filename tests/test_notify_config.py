@@ -26,11 +26,20 @@ def test_load_notify_config_reads_env_and_provider(monkeypatch):
 
 def test_load_notify_config_defaults_are_stable(monkeypatch):
     monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("MENTION_USER_ID", raising=False)
     config = load_notify_config({})
 
     assert config.provider == "discord"
     assert config.default_message_prefix == "Agent turn complete"
     assert config.discord.mention_user_id == DEFAULT_MENTION_USER_ID
+
+
+def test_load_notify_config_reads_mention_user_from_env(monkeypatch):
+    monkeypatch.setenv("MENTION_USER_ID", "123456")
+
+    config = load_notify_config({})
+
+    assert config.discord.mention_user_id == "123456"
 
 
 def test_load_notify_config_handles_legacy_targets_and_invalid_values(monkeypatch):

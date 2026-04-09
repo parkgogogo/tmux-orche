@@ -6,7 +6,7 @@ from notify.base import Notifier
 from notify.config import NotifyConfig
 from notify.models import DeliveryResult, NotifyEvent, ResolvedRoute
 from notify.registry import NotifierRegistry
-from notify.service import NotificationService, dispatch_event, dispatch_payload, resolve_routes
+from notify.service import MAX_NOTIFY_WORKERS, NotificationService, dispatch_event, dispatch_payload, resolve_routes
 
 
 class SuccessNotifier(Notifier):
@@ -178,9 +178,58 @@ def test_notification_service_marks_empty_factory_result_as_failure():
     )
 
 
+def test_notification_service_caps_thread_pool_workers(monkeypatch):
+    registry = NotifierRegistry()
+    registry.register("alpha", lambda config, http_client: SuccessNotifier())
+    service = NotificationService(registry=registry)
+    captured = {}
+
+    class FakeExecutor:
+        def __init__(self, *, max_workers):
+            captured["max_workers"] = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, event, route):
+            class FakeFuture:
+                def result(self_inner):
+                    return fn(event, route)
+
+            return FakeFuture()
+
+    monkeypatch.setattr("notify.service.ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr("notify.service.as_completed", lambda futures: list(futures))
+
+    routes = tuple(ResolvedRoute(provider="alpha", target=str(index)) for index in range(MAX_NOTIFY_WORKERS + 5))
+    results = service.send(
+        NotifyEvent(event="turn-complete", summary="done", session="demo", status="success"),
+        routes,
+        NotifyConfig(provider="alpha"),
+    )
+
+    assert captured["max_workers"] == MAX_NOTIFY_WORKERS
+    assert len(results) == len(routes)
+
+
 def test_dispatch_payload_returns_empty_for_invalid_payload():
     results = dispatch_payload(
         "not-json",
+        runtime_config={"discord_channel_id": "123", "discord_bot_token": "token"},
+        summary_loader=lambda session: "",
+    )
+
+    assert results == ()
+
+
+def test_dispatch_payload_returns_empty_for_oversized_payload():
+    payload = '{"summary":"' + ("x" * (10 * 1024 * 1024)) + '"}'
+
+    results = dispatch_payload(
+        payload,
         runtime_config={"discord_channel_id": "123", "discord_bot_token": "token"},
         summary_loader=lambda session: "",
     )

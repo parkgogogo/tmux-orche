@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -511,7 +512,10 @@ def main_callback(
     _configure_output_streams()
     configure_tls_runtime()
     ensure_directories()
-    if ctx.invoked_subcommand not in {"notify-internal", "_notify-discord", "watchdog-loop-internal"}:
+    if (
+        ctx.invoked_subcommand not in {"notify-internal", "_notify-discord", "watchdog-loop-internal"}
+        and shutil.which("tmux")
+    ):
         expire_managed_sessions()
     if version:
         console.print(f"orche {__version__}")

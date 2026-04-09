@@ -7,6 +7,7 @@ import shlex
 import time
 from pathlib import Path
 
+from json_utils import JSONInputTooLargeError, read_json_file
 from paths import ensure_directories, locks_dir
 
 from .base import AgentPlugin, AgentRuntime, BridgeIO
@@ -188,8 +189,8 @@ def _read_json_object(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        payload = read_json_file(path)
+    except (json.JSONDecodeError, JSONInputTooLargeError) as exc:
         raise RuntimeError(f"Refusing to write invalid JSON for {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise RuntimeError(f"Refusing to rewrite non-object Claude source config at {path}")

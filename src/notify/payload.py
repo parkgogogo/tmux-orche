@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
+from json_utils import JSONInputTooLargeError, MAX_JSON_INPUT_BYTES, loads_json
 from .config import NotifyConfig
 from .models import NotifyEvent
 
@@ -65,8 +66,8 @@ def parse_payload(payload_text: str) -> Optional[Mapping[str, Any]]:
     if not raw:
         return None
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
+        payload = loads_json(raw, source="notify payload")
+    except (json.JSONDecodeError, JSONInputTooLargeError):
         return None
     return payload if isinstance(payload, Mapping) else None
 
@@ -271,6 +272,8 @@ def _assistant_message_from_transcript(payload: Mapping[str, Any], *, wait_secon
     path = Path(transcript_path).expanduser()
     if not path.exists():
         return ""
+    if path.stat().st_size > MAX_JSON_INPUT_BYTES:
+        return ""
     deadline = time.monotonic() + max(wait_seconds, 0.0)
     while True:
         try:
@@ -282,8 +285,8 @@ def _assistant_message_from_transcript(payload: Mapping[str, Any], *, wait_secon
             if not raw:
                 continue
             try:
-                entry = json.loads(raw)
-            except json.JSONDecodeError:
+                entry = loads_json(raw, source=str(path))
+            except (json.JSONDecodeError, JSONInputTooLargeError):
                 continue
             if not isinstance(entry, Mapping) or entry.get("type") != "assistant":
                 continue

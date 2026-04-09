@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Tuple
 
 
-DEFAULT_MENTION_USER_ID = "1475734550813605959"
+DEFAULT_MENTION_USER_ID = ""
 
 
 def _as_bool(value: Any, default: bool) -> bool:

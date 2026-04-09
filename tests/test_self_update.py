@@ -181,3 +181,22 @@ def test_install_release_archive_supports_legacy_single_binary_layout(xdg_runtim
     assert executable.read_text(encoding="utf-8").startswith("#!/bin/sh")
     assert (prefix / "orche").is_symlink()
     assert (prefix / "orche").resolve() == executable
+
+
+def test_install_release_archive_rejects_symlink_members(xdg_runtime, tmp_path):
+    archive_path = tmp_path / "orche-v0.4.36-linux-x64.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        member = tarfile.TarInfo("orche/link")
+        member.type = tarfile.SYMTYPE
+        member.linkname = "../outside"
+        archive.addfile(member)
+
+    with pytest.raises(self_update.SelfUpdateError, match="unsupported archive member type"):
+        self_update.install_release_archive(
+            archive_path=archive_path,
+            version="v0.4.36",
+            target="linux-x64",
+            repo=self_update.DEFAULT_RELEASE_REPO,
+            prefix=tmp_path / "bin",
+            install_root=tmp_path / "releases",
+        )

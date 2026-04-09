@@ -28,6 +28,7 @@ from agents.common import (
     validate_discord_channel_id as common_validate_discord_channel_id,
     write_text_atomically,
 )
+from json_utils import JSONInputTooLargeError, MAX_JSON_INPUT_BYTES, loads_json, read_json_file
 from paths import config_path, ensure_directories, history_dir, locks_dir, meta_dir, orch_log_path
 
 BACKEND = "tmux"
@@ -718,8 +719,8 @@ def load_meta(session: str) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        data = read_json_file(path)
+    except (json.JSONDecodeError, JSONInputTooLargeError):
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -728,8 +729,8 @@ def _iter_meta_payloads() -> Iterable[Dict[str, Any]]:
     ensure_directories()
     for path in sorted(meta_dir().glob("*.json")):
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            payload = read_json_file(path)
+        except (json.JSONDecodeError, JSONInputTooLargeError):
             continue
         if not isinstance(payload, dict):
             continue
@@ -927,13 +928,16 @@ def load_history_entries(session: str) -> List[Dict[str, Any]]:
     path = history_path(session)
     if not path.exists():
         return []
+    if path.stat().st_size > MAX_JSON_INPUT_BYTES:
+        log_event("history.read.skipped", session=session, reason="size-limit")
+        return []
     entries: List[Dict[str, Any]] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
+            payload = loads_json(line, source=str(path))
+        except (json.JSONDecodeError, JSONInputTooLargeError):
             continue
         if isinstance(payload, dict):
             entries.append(payload)
@@ -1018,7 +1022,11 @@ def expire_managed_sessions(*, now: Optional[float] = None) -> List[str]:
             expired_roots.append(session)
     closed: List[str] = []
     for session in sorted(dict.fromkeys(expired_roots)):
-        close_session_tree(session, reason="ttl-expired")
+        try:
+            close_session_tree(session, reason="ttl-expired")
+        except Exception as exc:
+            log_exception("managed_session.expire_close_failed", exc, session=session)
+            continue
         closed.append(session)
     return closed
 
@@ -1060,8 +1068,8 @@ def load_raw_config() -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        data = read_json_file(path)
+    except (json.JSONDecodeError, JSONInputTooLargeError):
         return {}
     return data if isinstance(data, dict) else {}
 

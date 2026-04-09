@@ -210,6 +210,17 @@ def test_assistant_message_from_transcript_returns_empty_on_read_error(tmp_path,
     assert result == ""
 
 
+def test_assistant_message_from_transcript_returns_empty_for_oversized_file(tmp_path):
+    transcript_path = tmp_path / "claude.jsonl"
+    transcript_path.write_text("x" * (payload_module.MAX_JSON_INPUT_BYTES + 1), encoding="utf-8")
+
+    result = payload_module._assistant_message_from_transcript(
+        {"transcript_path": str(transcript_path)},
+    )
+
+    assert result == ""
+
+
 def test_assistant_message_from_transcript_skips_invalid_entries_and_times_out(tmp_path):
     transcript_path = tmp_path / "claude.jsonl"
     transcript_path.write_text(

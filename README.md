@@ -122,7 +122,7 @@ orche open \
 orche prompt repo-worker "analyze the failing tests"
 ```
 
-![OpenClaw supervision](./assets/orche-scene-openclaw.png)
+![OpenClaw supervision](./assets/openclaw-supervision-loop.png)
 
 OpenClaw opens the worker, the worker runs in tmux with durable state, and completion events route back through Discord so the supervisor can decide what happens next.
 

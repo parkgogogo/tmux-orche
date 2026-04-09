@@ -122,7 +122,7 @@ orche open \
 orche prompt repo-worker "分析一下失败的测试用例"
 ```
 
-![OpenClaw 监督](./assets/orche-scene-openclaw.png)
+![OpenClaw 监督](./assets/openclaw-supervision-loop.png)
 
 OpenClaw 打开 worker，worker 在 tmux 里保留完整现场运行。完成事件通过 Discord 回传，supervisor 据此决定下一步调度。
 

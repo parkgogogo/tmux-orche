@@ -34,7 +34,8 @@ BACKEND = "tmux"
 TMUX_SESSION = "orche"
 LEGACY_TMUX_SESSION = "orche-smux"
 DEFAULT_CAPTURE_LINES = 200
-INLINE_PANE_PERCENT = 33
+INLINE_PANE_PERCENT = 25
+DEFAULT_MAX_INLINE_SESSIONS = 4
 STARTUP_TIMEOUT = 90.0
 CLAUDE_STARTUP_GRACE_SECONDS = 2.0
 CLAUDE_PROMPT_ACK_TIMEOUT = 15.0
@@ -69,6 +70,7 @@ CONFIG_KEY_MAP = {
     "discord.bot-token": "discord_bot_token",
     "discord.mention-user-id": "notify_mention_user_id",
     "discord.webhook-url": "discord_webhook_url",
+    "inline.max-sessions": "max_inline_sessions",
     "managed.ttl-seconds": "managed_session_ttl_seconds",
     "notify.enabled": "notify_enabled",
 }
@@ -747,6 +749,18 @@ def managed_session_ttl_seconds(config: Optional[Mapping[str, Any]] = None) -> i
         return DEFAULT_MANAGED_SESSION_TTL_SECONDS
 
 
+def max_inline_sessions(config: Optional[Mapping[str, Any]] = None) -> int:
+    payload = dict(config or load_config())
+    raw = payload.get("max_inline_sessions", DEFAULT_MAX_INLINE_SESSIONS)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_INLINE_SESSIONS
+    if value < 1:
+        return DEFAULT_MAX_INLINE_SESSIONS
+    return min(value, DEFAULT_MAX_INLINE_SESSIONS)
+
+
 def session_parent(meta: Mapping[str, Any]) -> str:
     return str(meta.get("parent_session") or "").strip()
 
@@ -1026,6 +1040,7 @@ def default_config_values() -> Dict[str, Any]:
         "discord_bot_token": "",
         "discord_channel_id": "",
         "discord_webhook_url": "",
+        "max_inline_sessions": DEFAULT_MAX_INLINE_SESSIONS,
         "notify_enabled": True,
         "managed_session_ttl_seconds": DEFAULT_MANAGED_SESSION_TTL_SECONDS,
         "session": "",
@@ -1084,6 +1099,7 @@ def default_config_value(key: str) -> Any:
         "discord.bot-token": "",
         "discord.mention-user-id": "",
         "discord.webhook-url": "",
+        "inline.max-sessions": DEFAULT_MAX_INLINE_SESSIONS,
         "managed.ttl-seconds": DEFAULT_MANAGED_SESSION_TTL_SECONDS,
         "notify.enabled": True,
     }
@@ -1116,6 +1132,13 @@ def set_config_value(key: str, value: str) -> Dict[str, Any]:
             normalized = int(value.strip())
         except ValueError as exc:
             raise OrcheError("managed.ttl-seconds must be an integer number of seconds") from exc
+    elif key == "inline.max-sessions":
+        try:
+            normalized = int(value.strip())
+        except ValueError as exc:
+            raise OrcheError("inline.max-sessions must be an integer between 1 and 4") from exc
+        if normalized < 1 or normalized > DEFAULT_MAX_INLINE_SESSIONS:
+            raise OrcheError("inline.max-sessions must be between 1 and 4")
     else:
         normalized = value.strip()
     config[field] = normalized
@@ -1473,6 +1496,176 @@ def _preferred_host_pane(*, tmux_session: str, host_pane_id: str = "", exclude_p
     raise OrcheError(f"Unable to find a live host pane in tmux session: {tmux_session}")
 
 
+def _inline_slot_value(value: Any) -> Optional[int]:
+    try:
+        slot = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if slot < 0 or slot >= DEFAULT_MAX_INLINE_SESSIONS:
+        return None
+    return slot
+
+
+def _create_temp_inline_pane(*, tmux_session: str, cwd: Path) -> Dict[str, str]:
+    result = tmux(
+        "new-window",
+        "-d",
+        "-t",
+        tmux_session,
+        "-c",
+        str(cwd),
+        "-P",
+        "-F",
+        _tmux_join_fields("#{session_name}", "#{pane_id}", "#{window_id}", "#{window_name}"),
+        check=True,
+        capture=True,
+    )
+    return _pane_record_from_tmux_output(result.stdout)
+
+
+def _inline_group_sessions(
+    *,
+    tmux_session: str,
+    host_pane_id: str,
+    exclude_session: str = "",
+) -> List[Dict[str, Any]]:
+    members: List[Dict[str, Any]] = []
+    for payload in _iter_meta_payloads():
+        child_session = str(payload.get("session") or "").strip()
+        if not child_session or child_session == exclude_session:
+            continue
+        if str(payload.get("tmux_mode") or "").strip() != "inline-pane":
+            continue
+        if str(payload.get("host_pane_id") or "").strip() != host_pane_id:
+            continue
+        host_session = str(payload.get("tmux_host_session") or payload.get("tmux_session") or "").strip()
+        if host_session != tmux_session:
+            continue
+        if not session_metadata_is_live(child_session, payload):
+            continue
+        pane_id = str(payload.get("pane_id") or "").strip()
+        if not pane_id or pane_id == host_pane_id or not pane_exists(pane_id):
+            continue
+        info = get_pane_info(pane_id)
+        if info is None or str(info.get("session_name") or "").strip() != tmux_session:
+            continue
+        member = dict(payload)
+        member["pane_id"] = pane_id
+        members.append(member)
+    return members
+
+
+def _normalize_inline_group_slots(group: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    def sort_key(payload: Mapping[str, Any]) -> Tuple[int, float, str]:
+        slot = _inline_slot_value(payload.get("inline_slot"))
+        if slot is None:
+            slot = DEFAULT_MAX_INLINE_SESSIONS
+        last_seen = managed_session_last_event_at(payload, default=float("inf"))
+        session_name = str(payload.get("session") or "")
+        return (slot, last_seen, session_name)
+
+    normalized: List[Dict[str, Any]] = []
+    for index, payload in enumerate(sorted(group, key=sort_key)):
+        member = dict(payload)
+        member["inline_slot"] = index
+        normalized.append(member)
+        session_name = str(payload.get("session") or "").strip()
+        if not session_name or _inline_slot_value(payload.get("inline_slot")) == index:
+            continue
+        meta = load_meta(session_name)
+        if not meta:
+            continue
+        meta["inline_slot"] = index
+        save_meta(session_name, meta)
+    return normalized
+
+
+def _reflow_inline_panes(
+    *,
+    host_pane_id: str,
+    pane_ids_by_slot: Mapping[int, str],
+) -> None:
+    """Reflow inline panes into grid layout.
+
+    Layout strategy:
+    - 1 pane: single column on right (25% width)
+    - 2 panes: vertical stack on right (25% width each, 50% height)
+    - 3-4 panes: split right half into a 2x2 grid (25% width, 50% height each cell)
+    """
+    host_info = get_pane_info(host_pane_id)
+    if host_info is None:
+        raise OrcheError(f"Unable to find host pane for inline layout: {host_pane_id}")
+    host_window_id = str(host_info.get("window_id") or "").strip()
+
+    # Count visible panes
+    visible_slots = {k: v for k, v in pane_ids_by_slot.items() if v}
+    pane_count = len(visible_slots)
+
+    # Break out all existing panes first
+    for pane_id in pane_ids_by_slot.values():
+        if not pane_id or pane_id == host_pane_id or not pane_exists(pane_id):
+            continue
+        info = get_pane_info(pane_id)
+        if info is not None and str(info.get("window_id") or "").strip() == host_window_id:
+            tmux("break-pane", "-d", "-s", pane_id, check=True, capture=True)
+
+    slot_0 = pane_ids_by_slot.get(0, "")
+    slot_1 = pane_ids_by_slot.get(1, "")
+    slot_2 = pane_ids_by_slot.get(2, "")
+    slot_3 = pane_ids_by_slot.get(3, "")
+
+    # 1 pane: single column on the right
+    if pane_count == 1 and slot_0:
+        tmux(
+            "join-pane", "-d", "-h", "-l", "25%",
+            "-s", slot_0, "-t", host_pane_id,
+            check=True, capture=True,
+        )
+        return
+
+    # 2 panes: vertical stack (slot 0 on top, slot 1 below)
+    if pane_count == 2 and slot_0 and slot_1:
+        # First pane: 25% width on the right
+        tmux(
+            "join-pane", "-d", "-h", "-l", "25%",
+            "-s", slot_0, "-t", host_pane_id,
+            check=True, capture=True,
+        )
+        # Second pane: vertically split from first (50% height)
+        tmux(
+            "join-pane", "-d", "-v", "-l", "50%",
+            "-s", slot_1, "-t", slot_0,
+            check=True, capture=True,
+        )
+        return
+
+    # 3-4 panes: split the right half into a 2x2 grid.
+    if slot_0:
+        tmux(
+            "join-pane", "-d", "-h", "-l", "50%",
+            "-s", slot_0, "-t", host_pane_id,
+            check=True, capture=True,
+        )
+    if slot_1:
+        tmux(
+            "join-pane", "-d", "-h", "-l", "50%",
+            "-s", slot_1, "-t", slot_0,
+            check=True, capture=True,
+        )
+    if slot_2 and slot_0:
+        tmux(
+            "join-pane", "-d", "-v", "-l", "50%",
+            "-s", slot_2, "-t", slot_0,
+            check=True, capture=True,
+        )
+    if slot_3 and slot_1:
+        tmux(
+            "join-pane", "-d", "-v", "-l", "50%",
+            "-s", slot_3, "-t", slot_1,
+            check=True, capture=True,
+        )
+
+
 def create_inline_pane(
     session: str,
     cwd: Path,
@@ -1484,23 +1677,42 @@ def create_inline_pane(
         tmux_session=tmux_session,
         host_pane_id=host_pane_id,
     )
-    result = tmux(
-        "split-window",
-        "-d",
-        "-h",
-        "-p",
-        str(INLINE_PANE_PERCENT),
-        "-t",
-        resolved_host_pane,
-        "-c",
-        str(cwd),
-        "-P",
-        "-F",
-        _tmux_join_fields("#{session_name}", "#{pane_id}", "#{window_id}", "#{window_name}"),
-        check=True,
-        capture=True,
+    existing_group = _normalize_inline_group_slots(
+        _inline_group_sessions(
+            tmux_session=tmux_session,
+            host_pane_id=resolved_host_pane,
+            exclude_session=session,
+        )
     )
-    return _pane_record_from_tmux_output(result.stdout), resolved_host_pane
+    inline_limit = max_inline_sessions()
+    if len(existing_group) >= inline_limit:
+        raise OrcheError(
+            f"Inline pane limit reached for host pane {resolved_host_pane}: "
+            f"{inline_limit} session(s) max. Adjust inline.max-sessions (1-4) or close an existing inline session."
+        )
+
+    new_slot = len(existing_group)
+    pane = _create_temp_inline_pane(tmux_session=tmux_session, cwd=cwd)
+    try:
+        pane_ids_by_slot = {
+            int(member["inline_slot"]): str(member.get("pane_id") or "").strip()
+            for member in existing_group
+            if str(member.get("pane_id") or "").strip()
+        }
+        pane_ids_by_slot[new_slot] = pane["pane_id"]
+        _reflow_inline_panes(
+            host_pane_id=resolved_host_pane,
+            pane_ids_by_slot=pane_ids_by_slot,
+        )
+        info = get_pane_info(pane["pane_id"])
+        if info is None:
+            raise OrcheError(f"Failed to create inline tmux pane for {session}")
+        info["inline_slot"] = str(new_slot)
+        return info, resolved_host_pane
+    except Exception:
+        if pane_exists(pane["pane_id"]):
+            tmux("kill-pane", "-t", pane["pane_id"], check=False, capture=True)
+        raise
 
 
 def normalize_pane(session: str, cwd: Path, pane: Dict[str, str]) -> str:
@@ -1548,6 +1760,8 @@ def ensure_pane(
                         "last_seen_at": time.time(),
                     }
                 )
+                if resolved_tmux_mode != "inline-pane":
+                    meta.pop("inline_slot", None)
                 save_meta(session, meta)
                 return pane_id
 
@@ -1580,6 +1794,12 @@ def ensure_pane(
                 "last_seen_at": time.time(),
             }
         )
+        if resolved_tmux_mode == "inline-pane":
+            inline_slot = str(pane.get("inline_slot") or "").strip()
+            if inline_slot:
+                meta["inline_slot"] = int(inline_slot)
+        else:
+            meta.pop("inline_slot", None)
         save_meta(session, meta)
         return pane_id
 

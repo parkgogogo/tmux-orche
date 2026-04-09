@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import re
+import pytest
 
 from typer.testing import CliRunner
 
@@ -562,6 +563,187 @@ def test_close_session_closes_child_sessions_recursively(xdg_runtime, monkeypatc
     assert backend.load_meta("child") == {}
 
 
+def test_create_inline_pane_reflows_workers_into_grid(xdg_runtime, monkeypatch):
+    backend.save_meta(
+        "worker-1",
+        {
+            "session": "worker-1",
+            "tmux_mode": "inline-pane",
+            "tmux_host_session": "orche-reviewer",
+            "host_pane_id": "%host",
+            "pane_id": "%left-top",
+            "inline_slot": 0,
+        },
+    )
+    backend.save_meta(
+        "worker-2",
+        {
+            "session": "worker-2",
+            "tmux_mode": "inline-pane",
+            "tmux_host_session": "orche-reviewer",
+            "host_pane_id": "%host",
+            "pane_id": "%right-top",
+            "inline_slot": 1,
+        },
+    )
+    backend.save_meta(
+        "worker-3",
+        {
+            "session": "worker-3",
+            "tmux_mode": "inline-pane",
+            "tmux_host_session": "orche-reviewer",
+            "host_pane_id": "%host",
+            "pane_id": "%left-bottom",
+            "inline_slot": 2,
+        },
+    )
+
+    pane_info = {
+        "%host": {"session_name": "orche-reviewer", "window_id": "@host", "window_name": "main", "pane_dead": "0"},
+        "%left-top": {"session_name": "orche-reviewer", "window_id": "@host", "window_name": "main", "pane_dead": "0"},
+        "%right-top": {"session_name": "orche-reviewer", "window_id": "@host", "window_name": "main", "pane_dead": "0"},
+        "%left-bottom": {
+            "session_name": "orche-reviewer",
+            "window_id": "@host",
+            "window_name": "main",
+            "pane_dead": "0",
+        },
+        "%right-bottom": {
+            "session_name": "orche-reviewer",
+            "window_id": "@tmp",
+            "window_name": "tmp",
+            "pane_dead": "0",
+            "pane_id": "%right-bottom",
+        },
+    }
+    calls: list[tuple[str, ...]] = []
+
+    def fake_tmux(*args, **kwargs):
+        calls.append(tuple(args))
+        if list(args[:2]) == ["new-window", "-d"]:
+            stdout = backend._tmux_join_fields("orche-reviewer", "%right-bottom", "@tmp", "tmp") + "\n"
+            return subprocess.CompletedProcess(["tmux", *args], 0, stdout, "")
+        return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+
+    monkeypatch.setattr(backend, "session_metadata_is_live", lambda session, meta=None: True)
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id in pane_info)
+    monkeypatch.setattr(backend, "get_pane_info", lambda pane_id: dict(pane_info[pane_id]) if pane_id in pane_info else None)
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    pane, host = backend.create_inline_pane(
+        "worker-4",
+        Path("/repo"),
+        tmux_session="orche-reviewer",
+        host_pane_id="%host",
+    )
+
+    assert host == "%host"
+    assert pane["pane_id"] == "%right-bottom"
+    assert pane["inline_slot"] == "3"
+    assert ("break-pane", "-d", "-s", "%left-top") in calls
+    assert ("break-pane", "-d", "-s", "%right-top") in calls
+    assert ("break-pane", "-d", "-s", "%left-bottom") in calls
+    join_calls = [call for call in calls if call and call[0] == "join-pane"]
+    assert join_calls == [
+        (
+            "join-pane",
+            "-d",
+            "-h",
+            "-l",
+            "50%",
+            "-s",
+            "%left-top",
+            "-t",
+            "%host",
+        ),
+        (
+            "join-pane",
+            "-d",
+            "-h",
+            "-l",
+            "50%",
+            "-s",
+            "%right-top",
+            "-t",
+            "%left-top",
+        ),
+        (
+            "join-pane",
+            "-d",
+            "-v",
+            "-l",
+            "50%",
+            "-s",
+            "%left-bottom",
+            "-t",
+            "%left-top",
+        ),
+        (
+            "join-pane",
+            "-d",
+            "-v",
+            "-l",
+            "50%",
+            "-s",
+            "%right-bottom",
+            "-t",
+            "%right-top",
+        ),
+    ]
+
+
+def test_create_inline_pane_rejects_when_inline_limit_is_reached(xdg_runtime, monkeypatch):
+    backend.save_config({"max_inline_sessions": 2})
+    backend.save_meta(
+        "worker-1",
+        {
+            "session": "worker-1",
+            "tmux_mode": "inline-pane",
+            "tmux_host_session": "orche-reviewer",
+            "host_pane_id": "%host",
+            "pane_id": "%pane-1",
+            "inline_slot": 0,
+        },
+    )
+    backend.save_meta(
+        "worker-2",
+        {
+            "session": "worker-2",
+            "tmux_mode": "inline-pane",
+            "tmux_host_session": "orche-reviewer",
+            "host_pane_id": "%host",
+            "pane_id": "%pane-2",
+            "inline_slot": 1,
+        },
+    )
+
+    calls: list[tuple[str, ...]] = []
+    pane_info = {
+        "%host": {"session_name": "orche-reviewer", "window_id": "@host", "window_name": "main", "pane_dead": "0"},
+        "%pane-1": {"session_name": "orche-reviewer", "window_id": "@host", "window_name": "main", "pane_dead": "0"},
+        "%pane-2": {"session_name": "orche-reviewer", "window_id": "@host", "window_name": "main", "pane_dead": "0"},
+    }
+
+    def fake_tmux(*args, **kwargs):
+        calls.append(tuple(args))
+        return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+
+    monkeypatch.setattr(backend, "session_metadata_is_live", lambda session, meta=None: True)
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id in pane_info)
+    monkeypatch.setattr(backend, "get_pane_info", lambda pane_id: dict(pane_info[pane_id]) if pane_id in pane_info else None)
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    with pytest.raises(backend.OrcheError, match="Inline pane limit reached"):
+        backend.create_inline_pane(
+            "worker-3",
+            Path("/repo"),
+            tmux_session="orche-reviewer",
+            host_pane_id="%host",
+        )
+
+    assert not any(call[:2] == ("new-window", "-d") for call in calls)
+
+
 def test_config_supports_discord_mention_user_id(xdg_runtime):
     runner = CliRunner()
 
@@ -601,6 +783,29 @@ def test_config_rejects_non_integer_managed_ttl_seconds(xdg_runtime):
     assert "managed.ttl-seconds must be an integer number of seconds" in result.output
 
 
+def test_config_supports_inline_max_sessions(xdg_runtime):
+    runner = CliRunner()
+
+    set_result = runner.invoke(app, ["config", "set", "inline.max-sessions", "3"])
+    get_result = runner.invoke(app, ["config", "get", "inline.max-sessions"])
+    list_result = runner.invoke(app, ["config", "list"])
+
+    assert set_result.exit_code == 0
+    assert set_result.stdout.strip() == "3"
+    assert get_result.exit_code == 0
+    assert get_result.stdout.strip() == "3"
+    assert list_result.exit_code == 0
+    assert "inline.max-sessions" in list_result.stdout
+    assert "3" in list_result.stdout
+
+
+def test_config_rejects_out_of_range_inline_max_sessions(xdg_runtime):
+    result = CliRunner().invoke(app, ["config", "set", "inline.max-sessions", "5"])
+
+    assert result.exit_code == 1
+    assert "inline.max-sessions must be between 1 and 4" in result.output
+
+
 def test_config_supports_claude_command_home_and_config_paths(xdg_runtime):
     runner = CliRunner()
 
@@ -636,6 +841,7 @@ def test_config_get_reports_effective_defaults_for_unset_keys(xdg_runtime):
     command = runner.invoke(app, ["config", "get", "claude.command"])
     home_path = runner.invoke(app, ["config", "get", "claude.home-path"])
     config_path_result = runner.invoke(app, ["config", "get", "claude.config-path"])
+    inline_max = runner.invoke(app, ["config", "get", "inline.max-sessions"])
     notify_enabled = runner.invoke(app, ["config", "get", "notify.enabled"])
     managed_ttl = runner.invoke(app, ["config", "get", "managed.ttl-seconds"])
 
@@ -645,6 +851,8 @@ def test_config_get_reports_effective_defaults_for_unset_keys(xdg_runtime):
     assert home_path.stdout.strip() == "~/.claude"
     assert config_path_result.exit_code == 0
     assert config_path_result.stdout.strip() == "~/.claude.json"
+    assert inline_max.exit_code == 0
+    assert inline_max.stdout.strip() == str(backend.DEFAULT_MAX_INLINE_SESSIONS)
     assert notify_enabled.exit_code == 0
     assert notify_enabled.stdout.strip() == "true"
     assert managed_ttl.exit_code == 0

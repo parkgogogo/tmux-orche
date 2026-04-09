@@ -948,12 +948,31 @@ def test_ensure_pane_inline_mode_splits_current_tmux_session(xdg_runtime, tmp_pa
     tmux_calls = []
 
     monkeypatch.setattr(backend, "bridge_name_pane", lambda pane_id, session: None)
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id == "%1")
+    monkeypatch.setattr(
+        backend,
+        "get_pane_info",
+        lambda pane_id: {
+            "%1": {
+                "pane_id": "%1",
+                "session_name": "orche-reviewer",
+                "window_id": "@1",
+                "window_name": "main",
+                "pane_dead": "0",
+            },
+            "%11": {
+                "pane_id": "%11",
+                "session_name": "orche-reviewer",
+                "window_id": "@1",
+                "window_name": "main",
+                "pane_dead": "0",
+            },
+        }.get(pane_id),
+    )
 
     def fake_tmux(*args, **kwargs):
         tmux_calls.append(args)
-        if list(args) == ["display-message", "-p", "-t", "%1", "#{pane_id}"]:
-            return subprocess.CompletedProcess(["tmux", *args], 0, "%1\n", "")
-        if args[:2] == ("split-window", "-d"):
+        if args[:2] == ("new-window", "-d"):
             return subprocess.CompletedProcess(
                 ["tmux", *args],
                 0,
@@ -981,7 +1000,11 @@ def test_ensure_pane_inline_mode_splits_current_tmux_session(xdg_runtime, tmp_pa
     assert meta["host_pane_id"] == "%1"
     assert meta["tmux_host_session"] == "orche-reviewer"
     assert any(
-        call[:8] == ("split-window", "-d", "-h", "-p", str(backend.INLINE_PANE_PERCENT), "-t", "%1", "-c")
+        call[:4] == ("new-window", "-d", "-t", "orche-reviewer")
+        for call in tmux_calls
+    )
+    assert any(
+        call[:8] == ("join-pane", "-d", "-h", "-l", "25%", "-s", "%11", "-t")
         for call in tmux_calls
     )
 

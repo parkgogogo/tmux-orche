@@ -255,10 +255,36 @@ def test_ensure_managed_codex_home_preserves_state_files_needed_for_login(xdg_ru
     source_home = tmp_path / ".codex"
     source_home.mkdir()
     (source_home / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+    (source_home / "auth.json").write_text('{"token":"auth"}\n', encoding="utf-8")
+    (source_home / "mcp.json").write_text('{"mcpServers":{"playwright":{}}}\n', encoding="utf-8")
+    (source_home / "version.json").write_text('{"version":"0.0.1"}\n', encoding="utf-8")
+    (source_home / ".personality_migration").write_text("1\n", encoding="utf-8")
     (source_home / "state_5.sqlite").write_text("state", encoding="utf-8")
     (source_home / "state_5.sqlite-wal").write_text("state-wal", encoding="utf-8")
+    (source_home / "skills").mkdir()
+    (source_home / "skills" / "orche.txt").write_text("skill", encoding="utf-8")
+    (source_home / "rules").mkdir()
+    (source_home / "rules" / "default.rules").write_text("rule", encoding="utf-8")
+    (source_home / "memories").mkdir()
+    (source_home / "memories" / "memory.txt").write_text("memory", encoding="utf-8")
+    (source_home / "hooks").mkdir()
+    (source_home / "hooks" / "custom-hook.sh").write_text("#!/bin/sh\necho custom\n", encoding="utf-8")
     (source_home / "logs_1.sqlite").write_text("logs", encoding="utf-8")
     (source_home / "history.jsonl").write_text("history\n", encoding="utf-8")
+    (source_home / "models_cache.json").write_text('{"models":[]}\n', encoding="utf-8")
+    (source_home / "config.toml.orche.bak").write_text("backup\n", encoding="utf-8")
+    (source_home / "log").mkdir()
+    (source_home / "log" / "codex-tui.log").write_text("log\n", encoding="utf-8")
+    (source_home / "sessions").mkdir()
+    (source_home / "sessions" / "session.json").write_text("session\n", encoding="utf-8")
+    (source_home / "shell_snapshots").mkdir()
+    (source_home / "shell_snapshots" / "capture.sh").write_text("snapshot\n", encoding="utf-8")
+    (source_home / ".tmp").mkdir()
+    (source_home / ".tmp" / "cache.txt").write_text("tmp\n", encoding="utf-8")
+    (source_home / "tmp").mkdir()
+    (source_home / "tmp" / "cache.txt").write_text("tmp\n", encoding="utf-8")
+    (source_home / "cache").mkdir()
+    (source_home / "cache" / "entry.txt").write_text("cache\n", encoding="utf-8")
 
     target = Path(
         backend.ensure_managed_codex_home(
@@ -268,10 +294,121 @@ def test_ensure_managed_codex_home_preserves_state_files_needed_for_login(xdg_ru
         )
     )
 
+    assert (target / "auth.json").read_text(encoding="utf-8") == '{"token":"auth"}\n'
+    assert (target / "mcp.json").read_text(encoding="utf-8") == '{"mcpServers":{"playwright":{}}}\n'
+    assert (target / "version.json").read_text(encoding="utf-8") == '{"version":"0.0.1"}\n'
+    assert (target / ".personality_migration").read_text(encoding="utf-8") == "1\n"
     assert (target / "state_5.sqlite").read_text(encoding="utf-8") == "state"
     assert (target / "state_5.sqlite-wal").read_text(encoding="utf-8") == "state-wal"
+    assert (target / "skills" / "orche.txt").read_text(encoding="utf-8") == "skill"
+    assert (target / "rules" / "default.rules").read_text(encoding="utf-8") == "rule"
+    assert (target / "memories" / "memory.txt").read_text(encoding="utf-8") == "memory"
+    assert (target / "hooks" / "custom-hook.sh").read_text(encoding="utf-8") == "#!/bin/sh\necho custom\n"
+    assert (target / "hooks" / "discord-turn-notify.sh").exists()
     assert not (target / "logs_1.sqlite").exists()
     assert not (target / "history.jsonl").exists()
+    assert not (target / "models_cache.json").exists()
+    assert not (target / "config.toml.orche.bak").exists()
+    assert not (target / "log").exists()
+    assert not (target / "sessions").exists()
+    assert not (target / "shell_snapshots").exists()
+    assert not (target / ".tmp").exists()
+    assert not (target / "tmp").exists()
+    assert not (target / "cache").exists()
+
+
+def test_ensure_managed_codex_home_refreshes_hooks_json_from_source_home(xdg_runtime, tmp_path, monkeypatch):
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_RUNTIME_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend.codex_agent_module, "DEFAULT_CODEX_SOURCE_HOME", tmp_path / ".codex")
+
+    source_home = tmp_path / ".codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+    (source_home / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/bin/echo source-stop-hook-v1",
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    target = Path(
+        backend.ensure_managed_codex_home(
+            "repo-codex-main",
+            cwd=tmp_path,
+            discord_channel_id=None,
+        )
+    )
+    (target / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/bin/echo stale-target-hook",
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (source_home / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/bin/echo source-stop-hook-v2",
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    backend.ensure_managed_codex_home(
+        "repo-codex-main",
+        cwd=tmp_path,
+        discord_channel_id=None,
+    )
+
+    hooks_payload = json.loads((target / "hooks.json").read_text(encoding="utf-8"))
+
+    assert hooks_payload["hooks"]["Stop"][0]["hooks"][0]["command"] == "/bin/echo source-stop-hook-v2"
+    rendered = json.dumps(hooks_payload)
+    assert "stale-target-hook" not in rendered
 
 
 def test_source_config_lock_acquires_and_releases(xdg_runtime, tmp_path, monkeypatch):

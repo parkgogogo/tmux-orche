@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import fnmatch
 import json
 import os
 import re
@@ -47,8 +48,23 @@ CODEX_SUBMIT_SETTLE_MIN_SECONDS = 0.5
 CODEX_SUBMIT_SETTLE_MAX_SECONDS = 1.5
 CODEX_SUBMIT_SECONDS_PER_CHAR = 0.01
 DEFAULT_CODEX_SOURCE_HOME = Path.home() / ".codex"
-MANAGED_CODEX_RUNTIME_DIRS = {".tmp", "log", "shell_snapshots", "tmp"}
-MANAGED_CODEX_RUNTIME_FILE_GLOBS = ("history.jsonl", "logs_*.sqlite*")
+MANAGED_CODEX_COPY_FILES = (
+    ".personality_migration",
+    "auth.json",
+    "config.toml",
+    "hooks.json",
+    "mcp.json",
+    "version.json",
+)
+MANAGED_CODEX_COPY_GLOBS = ("state_*.sqlite*",)
+MANAGED_CODEX_COPY_DIRS = ("hooks", "memories", "rules", "skills")
+MANAGED_CODEX_EXCLUDE_FILES = (
+    "config.toml.orche.bak",
+    "history.jsonl",
+    "models_cache.json",
+)
+MANAGED_CODEX_EXCLUDE_FILE_GLOBS = ("*.lock", "*.log", "*.pid", "*.sock", "*.tmp", "logs_*.sqlite*")
+MANAGED_CODEX_EXCLUDE_DIRS = {".tmp", "cache", "log", "sessions", "shell_snapshots", "tmp"}
 TOML_TABLE_HEADER_RE = re.compile(r"^\s*\[\[?.*\]\]?\s*$")
 TOML_NOTICE_HEADER_RE = re.compile(r"^\s*\[notice\]\s*$")
 TOML_FEATURES_HEADER_RE = re.compile(r"^\s*\[features\]\s*$")
@@ -72,6 +88,10 @@ def default_notify_hook_path(codex_home: Path) -> Path:
 
 def default_hooks_path(codex_home: Path) -> Path:
     return codex_home / "hooks.json"
+
+
+def source_hooks_path() -> Path:
+    return default_hooks_path(DEFAULT_CODEX_SOURCE_HOME)
 
 
 def source_codex_config_path() -> Path:
@@ -152,6 +172,21 @@ def _read_json_object(path: Path) -> dict[str, object]:
 
 def _compact_prompt_text(value: str) -> str:
     return " ".join((value or "").split()).strip()
+
+
+def _matches_any(name: str, patterns: tuple[str, ...]) -> bool:
+    return any(fnmatch.fnmatch(name, pattern) for pattern in patterns)
+
+
+def _managed_codex_ignore(_directory: str, names: list[str]) -> set[str]:
+    ignored: set[str] = set()
+    for name in names:
+        if name in MANAGED_CODEX_EXCLUDE_DIRS:
+            ignored.add(name)
+            continue
+        if name in MANAGED_CODEX_EXCLUDE_FILES or _matches_any(name, MANAGED_CODEX_EXCLUDE_FILE_GLOBS):
+            ignored.add(name)
+    return ignored
 
 
 def codex_submit_settle_seconds(prompt: str) -> float:
@@ -549,13 +584,50 @@ def sync_trust_to_source_config(cwd: Path) -> str:
         return updated
 
 
-def prune_managed_codex_home(codex_home: Path) -> None:
-    for name in MANAGED_CODEX_RUNTIME_DIRS:
-        shutil.rmtree(codex_home / name, ignore_errors=True)
-    for pattern in MANAGED_CODEX_RUNTIME_FILE_GLOBS:
-        for path in codex_home.glob(pattern):
-            with contextlib.suppress(OSError):
-                path.unlink()
+def _copy_path(source: Path, target: Path) -> None:
+    if source.is_dir():
+        shutil.copytree(source, target, dirs_exist_ok=True, ignore=_managed_codex_ignore)
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+
+
+def cleanup_managed_codex_home(codex_home: Path) -> None:
+    for root, dir_names, file_names in os.walk(codex_home, topdown=True):
+        root_path = Path(root)
+        kept_dir_names: list[str] = []
+        for name in dir_names:
+            if name in MANAGED_CODEX_EXCLUDE_DIRS:
+                shutil.rmtree(root_path / name, ignore_errors=True)
+                continue
+            kept_dir_names.append(name)
+        dir_names[:] = kept_dir_names
+        for name in file_names:
+            if name in MANAGED_CODEX_EXCLUDE_FILES or _matches_any(name, MANAGED_CODEX_EXCLUDE_FILE_GLOBS):
+                with contextlib.suppress(OSError):
+                    (root_path / name).unlink()
+
+
+def materialize_managed_codex_home(source_home: Path, target_home: Path) -> None:
+    target_home.mkdir(parents=True, exist_ok=True)
+    if not source_home.exists():
+        cleanup_managed_codex_home(target_home)
+        return
+
+    for name in MANAGED_CODEX_COPY_FILES:
+        source_path = source_home / name
+        if source_path.exists():
+            _copy_path(source_path, target_home / name)
+    for pattern in MANAGED_CODEX_COPY_GLOBS:
+        for source_path in sorted(source_home.glob(pattern)):
+            if source_path.exists() and source_path.is_file():
+                _copy_path(source_path, target_home / source_path.name)
+    for name in MANAGED_CODEX_COPY_DIRS:
+        source_path = source_home / name
+        if source_path.exists() and source_path.is_dir():
+            _copy_path(source_path, target_home / name)
+
+    cleanup_managed_codex_home(target_home)
 
 
 def rewrite_codex_config(
@@ -584,7 +656,7 @@ def rewrite_codex_config(
         codex_home,
         session=session,
         discord_channel_id=discord_channel_id,
-        source_payload=_read_json_object(hooks_json_path),
+        source_payload=_read_json_object(source_hooks_path()),
     )
     write_text_atomically(hooks_json_path, json.dumps(hooks_payload, indent=2, ensure_ascii=False) + "\n")
 
@@ -603,12 +675,7 @@ class CodexAgent(AgentPlugin):
         discord_channel_id: str | None,
     ) -> AgentRuntime:
         target = default_codex_home_path(session)
-        if not target.exists():
-            if DEFAULT_CODEX_SOURCE_HOME.exists():
-                shutil.copytree(DEFAULT_CODEX_SOURCE_HOME, target)
-            else:
-                target.mkdir(parents=True, exist_ok=True)
-        prune_managed_codex_home(target)
+        materialize_managed_codex_home(DEFAULT_CODEX_SOURCE_HOME, target)
         write_notify_hook(default_notify_hook_path(target))
         rewrite_codex_config(target, session=session, cwd=cwd, discord_channel_id=discord_channel_id)
         return AgentRuntime(home=str(target.resolve()), managed=True, label=self.runtime_label)

@@ -692,6 +692,159 @@ def test_create_inline_pane_reflows_workers_into_grid(xdg_runtime, monkeypatch):
     ]
 
 
+def test_create_inline_pane_reflows_three_workers_with_new_pane_on_right(xdg_runtime, monkeypatch):
+    backend.save_meta(
+        "worker-1",
+        {
+            "session": "worker-1",
+            "tmux_mode": "inline-pane",
+            "tmux_host_session": "orche-reviewer",
+            "host_pane_id": "%host",
+            "pane_id": "%top-left",
+            "inline_slot": 0,
+        },
+    )
+    backend.save_meta(
+        "worker-2",
+        {
+            "session": "worker-2",
+            "tmux_mode": "inline-pane",
+            "tmux_host_session": "orche-reviewer",
+            "host_pane_id": "%host",
+            "pane_id": "%bottom-left",
+            "inline_slot": 1,
+        },
+    )
+
+    pane_info = {
+        "%host": {"session_name": "orche-reviewer", "window_id": "@host", "window_name": "main", "pane_dead": "0"},
+        "%top-left": {"session_name": "orche-reviewer", "window_id": "@host", "window_name": "main", "pane_dead": "0"},
+        "%bottom-left": {
+            "session_name": "orche-reviewer",
+            "window_id": "@host",
+            "window_name": "main",
+            "pane_dead": "0",
+        },
+        "%right-full": {
+            "session_name": "orche-reviewer",
+            "window_id": "@tmp",
+            "window_name": "tmp",
+            "pane_dead": "0",
+            "pane_id": "%right-full",
+        },
+    }
+    calls: list[tuple[str, ...]] = []
+
+    def fake_tmux(*args, **kwargs):
+        calls.append(tuple(args))
+        if list(args[:2]) == ["new-window", "-d"]:
+            stdout = backend._tmux_join_fields("orche-reviewer", "%right-full", "@tmp", "tmp") + "\n"
+            return subprocess.CompletedProcess(["tmux", *args], 0, stdout, "")
+        return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+
+    monkeypatch.setattr(backend, "session_metadata_is_live", lambda session, meta=None: True)
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id in pane_info)
+    monkeypatch.setattr(backend, "get_pane_info", lambda pane_id: dict(pane_info[pane_id]) if pane_id in pane_info else None)
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    pane, host = backend.create_inline_pane(
+        "worker-3",
+        Path("/repo"),
+        tmux_session="orche-reviewer",
+        host_pane_id="%host",
+    )
+
+    assert host == "%host"
+    assert pane["pane_id"] == "%right-full"
+    assert pane["inline_slot"] == "2"
+    assert ("break-pane", "-d", "-s", "%top-left") in calls
+    assert ("break-pane", "-d", "-s", "%bottom-left") in calls
+    join_calls = [call for call in calls if call and call[0] == "join-pane"]
+    assert join_calls == [
+        (
+            "join-pane",
+            "-d",
+            "-h",
+            "-l",
+            "50%",
+            "-s",
+            "%right-full",
+            "-t",
+            "%host",
+        ),
+        (
+            "join-pane",
+            "-d",
+            "-h",
+            "-l",
+            "50%",
+            "-s",
+            "%top-left",
+            "-t",
+            "%right-full",
+        ),
+        (
+            "join-pane",
+            "-d",
+            "-v",
+            "-l",
+            "50%",
+            "-s",
+            "%bottom-left",
+            "-t",
+            "%top-left",
+        ),
+    ]
+
+
+def test_reflow_inline_panes_keeps_two_panes_stacked_right(xdg_runtime, monkeypatch):
+    pane_info = {
+        "%host": {"session_name": "orche-reviewer", "window_id": "@host", "window_name": "main", "pane_dead": "0"},
+        "%top": {"session_name": "orche-reviewer", "window_id": "@host", "window_name": "main", "pane_dead": "0"},
+        "%bottom": {"session_name": "orche-reviewer", "window_id": "@host", "window_name": "main", "pane_dead": "0"},
+    }
+    calls: list[tuple[str, ...]] = []
+
+    def fake_tmux(*args, **kwargs):
+        calls.append(tuple(args))
+        return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+
+    monkeypatch.setattr(backend, "pane_exists", lambda pane_id: pane_id in pane_info)
+    monkeypatch.setattr(backend, "get_pane_info", lambda pane_id: dict(pane_info[pane_id]) if pane_id in pane_info else None)
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    backend._reflow_inline_panes(
+        host_pane_id="%host",
+        pane_ids_by_slot={0: "%top", 1: "%bottom"},
+    )
+
+    join_calls = [call for call in calls if call and call[0] == "join-pane"]
+    assert join_calls == [
+        (
+            "join-pane",
+            "-d",
+            "-h",
+            "-l",
+            "25%",
+            "-s",
+            "%top",
+            "-t",
+            "%host",
+        ),
+        (
+            "join-pane",
+            "-d",
+            "-v",
+            "-l",
+            "50%",
+            "-s",
+            "%bottom",
+            "-t",
+            "%top",
+        ),
+    ]
+
+
 def test_create_inline_pane_rejects_when_inline_limit_is_reached(xdg_runtime, monkeypatch):
     backend.save_config({"max_inline_sessions": 2})
     backend.save_meta(

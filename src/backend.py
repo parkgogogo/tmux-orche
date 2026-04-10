@@ -1618,7 +1618,8 @@ def _reflow_inline_panes(
     Layout strategy:
     - 1 pane: single column on right (25% width)
     - 2 panes: vertical stack on right (25% width each, 50% height)
-    - 3-4 panes: split right half into a 2x2 grid (25% width, 50% height each cell)
+    - 3 panes: right half split into a left stack and right full-height pane
+    - 4 panes: split right half into a 2x2 grid (25% width, 50% height each cell)
     """
     host_info = get_pane_info(host_pane_id)
     if host_info is None:
@@ -1667,7 +1668,26 @@ def _reflow_inline_panes(
         )
         return
 
-    # 3-4 panes: split the right half into a 2x2 grid.
+    # 3 panes: two stacked panes on the left of the inline region, newest pane full-height on the right.
+    if pane_count == 3 and slot_0 and slot_1 and slot_2:
+        tmux(
+            "join-pane", "-d", "-h", "-l", "50%",
+            "-s", slot_2, "-t", host_pane_id,
+            check=True, capture=True,
+        )
+        tmux(
+            "join-pane", "-d", "-h", "-l", "50%",
+            "-s", slot_0, "-t", slot_2,
+            check=True, capture=True,
+        )
+        tmux(
+            "join-pane", "-d", "-v", "-l", "50%",
+            "-s", slot_1, "-t", slot_0,
+            check=True, capture=True,
+        )
+        return
+
+    # 4 panes: split the right half into a 2x2 grid.
     if slot_0:
         tmux(
             "join-pane", "-d", "-h", "-l", "50%",

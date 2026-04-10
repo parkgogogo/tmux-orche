@@ -635,7 +635,7 @@ def open_session(
             cli_args=list(ctx.args),
         )
         if prompt is not None:
-            send_prompt(session, resolved_cwd, agent, prompt)
+            send_prompt(session, resolved_cwd, agent, prompt, pane_id=_pane_id)
         _print_action_ok("open", session=session)
     except (OrcheError, subprocess.CalledProcessError) as exc:
         _handle_error(exc)

@@ -1218,6 +1218,46 @@ def test_send_prompt_waits_for_managed_claude_prompt_ack(xdg_runtime, tmp_path, 
     assert captured["turn_id"]
 
 
+def test_send_prompt_reuses_supplied_pane_id_without_ensuring_session(xdg_runtime, tmp_path, monkeypatch):
+    session = "demo-codex-managed"
+    backend.save_meta(
+        session,
+        {
+            "session": session,
+            "agent": "codex",
+            "launch_mode": "managed",
+            "runtime_home_managed": True,
+        },
+    )
+    bridge = FakeBridge()
+
+    monkeypatch.setattr(backend, "BRIDGE", bridge)
+    monkeypatch.setattr(
+        backend,
+        "ensure_session",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ensure_session should not be called")),
+    )
+    monkeypatch.setattr(
+        backend,
+        "ensure_native_session",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ensure_native_session should not be called")),
+    )
+    monkeypatch.setattr(backend, "read_pane", lambda pane_id, *args, **kwargs: f"capture:{pane_id}")
+    monkeypatch.setattr(backend, "start_session_watchdog", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend, "append_action_history", lambda *args, **kwargs: None)
+
+    pane_id = backend.send_prompt(session, tmp_path, "codex", "hello", pane_id="%42")
+
+    assert pane_id == "%42"
+    assert bridge.calls == [
+        ("type", session, "hello"),
+        ("keys", session, ["Enter"]),
+    ]
+    pending_turn = backend.load_meta(session)["pending_turn"]
+    assert pending_turn["pane_id"] == "%42"
+    assert pending_turn["before_capture"] == "capture:%42"
+
+
 def test_codex_submit_prompt_skips_delay_for_empty_prompt(monkeypatch):
     plugin = CodexAgent()
     bridge = FakeBridge()
@@ -1266,6 +1306,20 @@ def test_ensure_native_agent_running_uses_respawn_pane_without_send_keys(xdg_run
     assert pane_id == "%9"
     assert any(call[:4] == ("respawn-pane", "-k", "-t", "%9") for call in tmux_calls)
     assert not any(call and call[0] == "send-keys" for call in tmux_calls)
+
+
+def test_bridge_name_pane_uses_single_tmux_round_trip(monkeypatch):
+    tmux_calls: list[tuple[str, ...]] = []
+
+    def fake_tmux(*args, **kwargs):
+        tmux_calls.append(tuple(str(value) for value in args))
+        return subprocess.CompletedProcess(["tmux", *args], 0, "", "")
+
+    monkeypatch.setattr(backend, "tmux", fake_tmux)
+
+    backend.bridge_name_pane("%42", "demo-session")
+
+    assert tmux_calls == [("select-pane", "-t", "%42", "-T", "demo-session")]
 
 
 def test_ensure_pane_inline_mode_splits_current_tmux_session(xdg_runtime, tmp_path, monkeypatch):

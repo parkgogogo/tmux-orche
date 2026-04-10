@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.65 - 2026-04-10
+
+- Add a Telegram notify provider so `orche` sessions can deliver notifications through Telegram in addition to the existing routes.
+- Clean up stale Codex source-config lock files so managed/runtime config refreshes no longer get stuck behind leftover locks.
+
 ## v0.4.64 - 2026-04-10
 
 - Correct the packaged `__version__` to `0.4.64` so the publish workflow's tag-to-package verification passes for the release.

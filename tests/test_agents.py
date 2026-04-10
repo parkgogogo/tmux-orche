@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import subprocess
 import threading
@@ -13,9 +14,12 @@ from agents.claude import CLAUDE_SUBMIT_SETTLE_SECONDS, ClaudeAgent
 from agents.codex import (
     CODEX_SUBMIT_SETTLE_MAX_SECONDS,
     CODEX_SUBMIT_SETTLE_MIN_SECONDS,
+    SOURCE_CONFIG_LOCK_NAME,
     CodexAgent,
     codex_submit_settle_seconds,
+    source_config_lock,
 )
+from paths import locks_dir
 
 
 class FakeBridge:
@@ -268,6 +272,91 @@ def test_ensure_managed_codex_home_preserves_state_files_needed_for_login(xdg_ru
     assert (target / "state_5.sqlite-wal").read_text(encoding="utf-8") == "state-wal"
     assert not (target / "logs_1.sqlite").exists()
     assert not (target / "history.jsonl").exists()
+
+
+def test_source_config_lock_acquires_and_releases(xdg_runtime, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    lock_path = locks_dir() / f"{SOURCE_CONFIG_LOCK_NAME}.lock"
+
+    with source_config_lock():
+        assert lock_path.exists()
+        lines = lock_path.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == str(os.getpid())
+        assert lines[1] == str(tmp_path.resolve())
+
+    assert not lock_path.exists()
+
+
+def test_source_config_lock_removes_stale_dead_pid(xdg_runtime, monkeypatch):
+    lock_path = locks_dir() / f"{SOURCE_CONFIG_LOCK_NAME}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("424242\n/tmp/stale\n", encoding="utf-8")
+    checked_pids: list[int] = []
+
+    def fake_pid_is_alive(pid: int) -> bool:
+        checked_pids.append(pid)
+        return False
+
+    monkeypatch.setattr("agents.codex._pid_is_alive", fake_pid_is_alive)
+
+    with source_config_lock():
+        lines = lock_path.read_text(encoding="utf-8").splitlines()
+        assert lines[0] == str(os.getpid())
+
+    assert checked_pids == [424242]
+    assert not lock_path.exists()
+
+
+def test_source_config_lock_invalid_pid_falls_back_to_timeout(xdg_runtime, monkeypatch):
+    lock_path = locks_dir() / f"{SOURCE_CONFIG_LOCK_NAME}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("/tmp/legacy-cwd-only\n", encoding="utf-8")
+    now = {"value": 100.0}
+    checked_pids: list[int] = []
+
+    monkeypatch.setattr("agents.codex.time.time", lambda: now["value"])
+
+    def fake_sleep(seconds: float) -> None:
+        now["value"] += seconds
+
+    monkeypatch.setattr("agents.codex.time.sleep", fake_sleep)
+    monkeypatch.setattr("agents.codex._pid_is_alive", lambda pid: checked_pids.append(pid) or True)
+
+    with pytest.raises(RuntimeError, match="Timed out waiting for Codex source config lock"):
+        with source_config_lock(timeout=0.15):
+            pytest.fail("lock acquisition should time out for invalid legacy content")
+
+    assert checked_pids == []
+    assert lock_path.read_text(encoding="utf-8") == "/tmp/legacy-cwd-only\n"
+
+
+def test_source_config_lock_living_pid_times_out(xdg_runtime, monkeypatch):
+    lock_path = locks_dir() / f"{SOURCE_CONFIG_LOCK_NAME}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("31337\n/tmp/active\n", encoding="utf-8")
+    now = {"value": 200.0}
+    checked_pids: list[int] = []
+
+    monkeypatch.setattr("agents.codex.time.time", lambda: now["value"])
+
+    def fake_sleep(seconds: float) -> None:
+        now["value"] += seconds
+
+    monkeypatch.setattr("agents.codex.time.sleep", fake_sleep)
+
+    def fake_pid_is_alive(pid: int) -> bool:
+        checked_pids.append(pid)
+        return True
+
+    monkeypatch.setattr("agents.codex._pid_is_alive", fake_pid_is_alive)
+
+    with pytest.raises(RuntimeError, match="Timed out waiting for Codex source config lock"):
+        with source_config_lock(timeout=0.15):
+            pytest.fail("lock acquisition should time out while owner is alive")
+
+    assert checked_pids
+    assert set(checked_pids) == {31337}
+    assert lock_path.read_text(encoding="utf-8") == "31337\n/tmp/active\n"
 
 
 def test_ensure_managed_claude_home_preserves_existing_source_config(xdg_runtime, tmp_path, monkeypatch):

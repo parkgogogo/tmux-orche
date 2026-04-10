@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
+import os
 import re
 import shlex
 import shutil
@@ -467,6 +469,41 @@ def build_hooks_payload(
     return payload
 
 
+def _read_lock_pid(path: Path) -> int | None:
+    try:
+        contents = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    first_line = contents.splitlines()[0].strip() if contents else ""
+    if not first_line:
+        return None
+    try:
+        pid = int(first_line)
+    except ValueError:
+        return None
+    if pid <= 0:
+        return None
+    return pid
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        if exc.errno in {errno.EINVAL, errno.ESRCH}:
+            return False
+        if exc.errno == errno.EPERM:
+            return True
+        raise
+    return True
+
+
 @contextlib.contextmanager
 def source_config_lock(*, timeout: float = 5.0):
     ensure_directories()
@@ -477,11 +514,16 @@ def source_config_lock(*, timeout: float = 5.0):
             fd = path.open("x")
             break
         except FileExistsError:
+            lock_pid = _read_lock_pid(path)
+            if lock_pid is not None and not _pid_is_alive(lock_pid):
+                with contextlib.suppress(FileNotFoundError):
+                    path.unlink()
+                continue
             if time.time() > deadline:
                 raise RuntimeError("Timed out waiting for Codex source config lock")
             time.sleep(0.1)
     try:
-        fd.write(str(Path.cwd()))
+        fd.write(f"{os.getpid()}\n{Path.cwd()}\n")
         fd.flush()
         yield
     finally:

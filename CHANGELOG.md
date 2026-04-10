@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.64 - 2026-04-10
+
+- Correct the packaged `__version__` to `0.4.64` so the publish workflow's tag-to-package verification passes for the release.
+- Republish after the failed `v0.4.63` PyPI workflow, whose tag pointed at code that still reported `0.4.61`.
+
 ## v0.4.56 - 2026-04-09
 
 - Add `orche open --prompt "..."` so managed Claude and Codex workers can receive the first task as part of session creation instead of requiring a follow-up `orche prompt`.

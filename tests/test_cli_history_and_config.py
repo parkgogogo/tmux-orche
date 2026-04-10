@@ -1791,8 +1791,8 @@ def test_open_command_supports_initial_prompt(xdg_runtime, monkeypatch):
     monkeypatch.setattr(
         cli,
         "send_prompt",
-        lambda session, cwd, agent, message: captured.update(
-            {"session": session, "cwd": cwd, "agent": agent, "message": message}
+        lambda session, cwd, agent, message, **kwargs: captured.update(
+            {"session": session, "cwd": cwd, "agent": agent, "message": message, **kwargs}
         )
         or "%1",
     )
@@ -1816,6 +1816,7 @@ def test_open_command_supports_initial_prompt(xdg_runtime, monkeypatch):
         "cwd": project_dir.resolve(),
         "agent": "claude",
         "message": "review auth changes",
+        "pane_id": "%1",
     }
     assert "open ok: session=demo-session" in result.output
 

@@ -351,9 +351,7 @@ def _tmux_bridge_dispatch(*args: str) -> subprocess.CompletedProcess[str]:
         if len(args) != 3:
             raise OrcheError("tmux-bridge name requires <pane_id> <session>")
         pane_id, session = args[1], args[2]
-        if not pane_exists(pane_id):
-            raise OrcheError(f"Unknown pane: {pane_id}")
-        tmux("select-pane", "-t", pane_id, "-T", session, check=False, capture=True)
+        tmux("select-pane", "-t", pane_id, "-T", session, check=True, capture=True)
         return _bridge_result(args)
     if command == "resolve":
         if len(args) != 2:
@@ -1790,7 +1788,6 @@ def normalize_pane(session: str, cwd: Path, pane: Dict[str, str]) -> str:
     pane_id = pane["pane_id"]
     if pane.get("pane_dead") == "1":
         tmux("respawn-pane", "-k", "-t", pane_id, "-c", str(cwd), check=True, capture=True)
-    tmux("select-pane", "-t", pane_id, "-T", session, check=False, capture=True)
     bridge_name_pane(pane_id, session)
     return pane_id
 
@@ -3365,33 +3362,36 @@ def send_prompt(
     prompt: str,
     *,
     approve_all: bool = False,
+    pane_id: str = "",
 ) -> str:
     plugin = get_agent(agent)
+    resolved_pane_id = str(pane_id or "").strip()
     meta = load_meta(session)
-    if session_launch_mode(meta) == "native":
-        pane_id = ensure_native_session(
-            session,
-            cwd,
-            agent,
-            cli_args=native_cli_args_from_meta(meta),
-        )
-    else:
-        pane_id = ensure_session(
-            session,
-            cwd,
-            agent,
-            approve_all=approve_all,
-        )
+    if not resolved_pane_id:
+        if session_launch_mode(meta) == "native":
+            resolved_pane_id = ensure_native_session(
+                session,
+                cwd,
+                agent,
+                cli_args=native_cli_args_from_meta(meta),
+            )
+        else:
+            resolved_pane_id = ensure_session(
+                session,
+                cwd,
+                agent,
+                approve_all=approve_all,
+            )
     meta = load_meta(session)
     wait_for_ack = plugin.name == "claude" and runtime_home_managed_from_meta(meta) and session_launch_mode(meta) != "native"
-    before_capture = read_pane(pane_id, DEFAULT_CAPTURE_LINES)
+    before_capture = read_pane(resolved_pane_id, DEFAULT_CAPTURE_LINES)
     turn_id = uuid.uuid4().hex[:12]
     meta["pending_turn"] = {
         "turn_id": turn_id,
         "prompt": prompt,
         "before_capture": before_capture,
         "submitted_at": time.time(),
-        "pane_id": pane_id,
+        "pane_id": resolved_pane_id,
         "notifications": {},
         "prompt_ack": {
             "state": "pending",
@@ -3414,10 +3414,10 @@ def send_prompt(
         start_session_watchdog(session, turn_id=turn_id)
     except Exception as exc:  # pragma: no cover
         log_exception("watchdog.start.error", exc, session=session, turn_id=turn_id)
-    append_action_history(session, cwd, agent, "prompt", prompt=prompt, pane_id=pane_id)
+    append_action_history(session, cwd, agent, "prompt", prompt=prompt, pane_id=resolved_pane_id)
     if wait_for_ack:
         wait_for_prompt_ack(session, turn_id=turn_id, prompt=prompt)
-    return pane_id
+    return resolved_pane_id
 
 
 def latest_turn_summary(session: str) -> str:

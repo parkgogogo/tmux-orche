@@ -53,6 +53,10 @@ READY_SURFACE_HINTS = (
     "Esc to interrupt",
     "Ctrl-C to interrupt",
 )
+CODEX_FAILURE_HINTS = (
+    "stream disconnected before completion",
+    "error sending request for url",
+)
 CODEX_SUBMIT_SETTLE_MIN_SECONDS = 0.5
 CODEX_SUBMIT_SETTLE_MAX_SECONDS = 1.5
 CODEX_SUBMIT_SECONDS_PER_CHAR = 0.01
@@ -267,6 +271,38 @@ def _is_codex_output_continuation(line: str) -> bool:
     if stripped.startswith(("› ", "• ", "⚠ ", "╭", "╰", "│", "└")):
         return False
     return not _is_codex_status_line(stripped)
+
+
+def _collect_codex_wrapped_block(lines: list[str], start_index: int) -> str:
+    parts = [lines[start_index].strip()]
+    cursor = start_index + 1
+    while cursor < len(lines):
+        stripped = lines[cursor].strip()
+        if not stripped:
+            break
+        if stripped.startswith(("› ", "• ", "⚠ ", "╭", "╰", "│", "└")):
+            break
+        if _is_codex_status_line(stripped):
+            break
+        parts.append(stripped)
+        cursor += 1
+    return _compact_prompt_text(" ".join(parts))
+
+
+def _extract_codex_failure_summary(capture: str, prompt: str) -> str:
+    lines = capture.splitlines()
+    prompt_inline = _compact_prompt_text(prompt)
+    for index, _raw_line in enumerate(lines):
+        candidate = _collect_codex_wrapped_block(lines, index)
+        if not candidate:
+            continue
+        lowered = candidate.lower()
+        if prompt_inline and _compact_prompt_text(candidate) == prompt_inline:
+            continue
+        if not any(hint in lowered for hint in CODEX_FAILURE_HINTS):
+            continue
+        return candidate
+    return ""
 
 
 def _extract_codex_completion_summary(capture: str, prompt: str) -> str:
@@ -759,6 +795,9 @@ class CodexAgent(AgentPlugin):
 
     def extract_completion_summary(self, capture: str, prompt: str) -> str:
         return _extract_codex_completion_summary(capture, prompt)
+
+    def extract_failure_summary(self, capture: str, prompt: str) -> str:
+        return _extract_codex_failure_summary(capture, prompt)
 
     def cleanup_runtime(self, runtime: AgentRuntime) -> None:
         if runtime.home:

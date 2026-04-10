@@ -829,6 +829,26 @@ def test_claude_completion_summary_requires_returned_prompt():
     assert summary == ""
 
 
+def test_codex_failure_summary_detects_wrapped_stream_disconnect():
+    plugin = backend.get_agent("codex")
+    capture = (
+        "› Implement the parser refactor.\n"
+        "\n"
+        "stream disconnected before completion:\n"
+        "error sending request for url\n"
+        "(https://api-s.zwenooo.link/v1/responses)\n"
+        "\n"
+        "OpenAI Codex\n"
+    )
+
+    summary = plugin.extract_failure_summary(capture, "Implement the parser refactor.")
+
+    assert (
+        summary
+        == "stream disconnected before completion: error sending request for url (https://api-s.zwenooo.link/v1/responses)"
+    )
+
+
 def test_orche_shim_executes_repo_cli(xdg_runtime):
     shim = backend.ensure_orche_shim()
 

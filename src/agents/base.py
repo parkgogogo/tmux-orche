@@ -72,6 +72,13 @@ class AgentPlugin(ABC):
     def capture_has_completion_surface(self, capture: str, prompt: str) -> bool:
         return bool(self.extract_completion_summary(capture, prompt))
 
+    def extract_failure_summary(self, capture: str, prompt: str) -> str:
+        _ = (capture, prompt)
+        return ""
+
+    def capture_has_failure_surface(self, capture: str, prompt: str) -> bool:
+        return bool(self.extract_failure_summary(capture, prompt))
+
     def submit_prompt(self, session: str, prompt: str, *, bridge: BridgeIO) -> None:
         if prompt:
             bridge.type(session, prompt)

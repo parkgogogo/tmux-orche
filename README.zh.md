@@ -101,6 +101,15 @@ orche --help
 
 用 `orche` 让多个 agent 在 tmux 里协同工作。例如让 Claude 做 review，Codex 写代码：
 
+如果你只是想快速打开一个默认 worker，`orche` 也提供了简写命令：
+
+```bash
+orche codex   # 等价于：orche open --agent codex
+orche claude  # 等价于：orche open --agent claude
+```
+
+当你只需要一个默认 agent 的 tmux session，不想每次都把 `orche open` 写全时，这两个简写会更方便。
+
 ```bash
 # 打开 reviewer session
 orche open --cwd ./repo --agent claude --name repo-reviewer

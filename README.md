@@ -101,6 +101,15 @@ There are also a few helper commands for advanced control:
 
 Use `orche` when you want agents to collaborate inside tmux. For example, let Claude review while Codex writes code:
 
+For the common case where you just want to open a default worker quickly, `orche` also provides shorthand commands:
+
+```bash
+orche codex   # same as: orche open --agent codex
+orche claude  # same as: orche open --agent claude
+```
+
+These shortcuts are convenient when you want a tmux session with the default agent and do not need to spell out `orche open`.
+
 ```bash
 # Open a reviewer session
 orche open --cwd ./repo --agent claude --name repo-reviewer

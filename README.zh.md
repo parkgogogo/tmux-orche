@@ -122,6 +122,16 @@ orche prompt repo-worker "重构 auth 模块"
 
 ### 2. OpenClaw 监督闭环
 
+使用 openclaw 的时候总是会遇到一些问题：
+
+- 我们为 openclaw 配置的模型，由于模型能力限制，长任务完成度不如 codex/claude（尤其是编码等任务）
+
+- openclaw 内置的 acpx 在实际使用中问题很多
+
+所以，我们可以使用 orche，让 openclaw 使用 orche 创建 codex/claude session，并委派任务，在任务完成后，codex 会在群聊反馈任务完成，实现闭环
+
+> 这里需要为 codex 单独创建一个 Discord Bot，并通过 `orche config` 正确进行设置，详细见配置
+
 当 supervisor 是 OpenClaw，且闭环需要回到 Discord 时：
 
 ```bash
@@ -138,11 +148,9 @@ orche prompt repo-worker "分析一下失败的测试用例"
 
 OpenClaw 打开 worker，worker 在 tmux 里保留完整现场运行。完成事件通过 Discord 回传，supervisor 据此决定下一步调度。
 
-### 3. 通过 Skills 扩展能力
+### 3. 安装 SKILL（推荐）
 
-`orche` 支持通过 skills 扩展 agent 的能力。skill 本质上是一套放在 agent skills 目录下的指令或工具集。
-
-比如，为 Codex 安装本仓库的 `orche` skill：
+正确的为你的 agent 安装 SKILL，可以帮助他们快速学会使用 `oche` 
 
 ```bash
 mkdir -p ~/.codex/skills/orche
@@ -202,9 +210,10 @@ orche config reset claude.command
 
 ## 路线图
 
-- [ ] 支持更多 code agent
-- [ ] 支持更多 notify provider
-- [ ] 基于插件的 agent & notify 架构
+- [x] 支持 Discord 通知
+- [ ] 支持 Telegram 通知
+- [ ] 支持更多的 agents
+- [ ] 支持 codex 作为独立 subagent 形态，有独立的 skills / mcp 等，专有化 agent 能力
 
 因为 `notify` 和 `agent` 都是按插件设计的，你也可以开发自己的插件：
 

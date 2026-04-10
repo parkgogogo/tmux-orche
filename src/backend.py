@@ -2998,7 +2998,6 @@ def run_session_watchdog(
         pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
         if not pending_turn or str(pending_turn.get("turn_id") or "") != turn_id:
             return "completed"
-        plugin = get_agent(str(meta.get("agent") or "codex"))
         watchdog = pending_turn.get("watchdog") if isinstance(pending_turn.get("watchdog"), dict) else {}
         if bool(watchdog.get("stop_requested")):
             update_watchdog_metadata(
@@ -3016,10 +3015,6 @@ def run_session_watchdog(
         )
         current_cursor = (str(sample.get("cursor_x") or ""), str(sample.get("cursor_y") or ""))
         progress_detected = observable_progress_detected(previous_signature, previous_cursor, sample)
-        failure_summary = plugin.extract_failure_summary(
-            str(sample.get("capture") or ""),
-            str(pending_turn.get("prompt") or ""),
-        )
         last_progress_at = _watchdog_time_value(
             watchdog.get("last_progress_at"),
             pending_turn.get("submitted_at"),
@@ -3027,9 +3022,7 @@ def run_session_watchdog(
         )
         idle_samples = int(watchdog.get("idle_samples") or 0)
         state = "running"
-        if failure_summary:
-            state = "failed"
-        elif progress_detected:
+        if progress_detected:
             last_progress_at = now
             idle_samples = 0
         else:
@@ -3083,7 +3076,7 @@ def run_session_watchdog(
         if state in {"failed", "stalled", "needs-input"}:
             emitted = False
             last_event = str(watchdog.get("last_event") or "")
-            summary = failure_summary or _watchdog_summary_for_event(
+            summary = _watchdog_summary_for_event(
                 state,
                 pending_turn=pending_turn,
                 capture=str(sample.get("capture") or ""),

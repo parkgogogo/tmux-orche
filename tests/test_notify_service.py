@@ -269,6 +269,38 @@ def test_resolve_routes_uses_session_notify_binding_for_tmux_bridge():
     )
 
 
+def test_resolve_routes_uses_session_notify_binding_for_telegram():
+    event = NotifyEvent(event="turn-complete", summary="done", session="demo", status="success")
+
+    routes = resolve_routes(
+        event=event,
+        runtime_config={"notify_binding": {"provider": "telegram", "target": "12345", "thread": "ops"}},
+        notify_config=NotifyConfig(provider="telegram"),
+    )
+
+    assert routes == (
+        ResolvedRoute(
+            provider="telegram",
+            target="12345",
+            session="demo",
+            metadata={"thread": "ops"},
+        ),
+    )
+
+
+def test_resolve_routes_uses_explicit_target_for_telegram_binding():
+    event = NotifyEvent(event="turn-complete", summary="done", session="demo", status="success")
+
+    routes = resolve_routes(
+        event=event,
+        runtime_config={"notify_binding": {"provider": "telegram", "target": "12345"}},
+        notify_config=NotifyConfig(provider="telegram"),
+        explicit_channel_id="67890",
+    )
+
+    assert routes == (ResolvedRoute(provider="telegram", target="67890", session="demo"),)
+
+
 def test_resolve_routes_skips_discord_without_channel_target():
     event = NotifyEvent(event="turn-complete", summary="done", session="demo", status="success")
 
@@ -276,6 +308,18 @@ def test_resolve_routes_skips_discord_without_channel_target():
         event=event,
         runtime_config={},
         notify_config=NotifyConfig(provider="discord"),
+    )
+
+    assert routes == ()
+
+
+def test_resolve_routes_skips_telegram_without_target():
+    event = NotifyEvent(event="turn-complete", summary="done", session="demo", status="success")
+
+    routes = resolve_routes(
+        event=event,
+        runtime_config={"notify_binding": {"provider": "telegram", "target": ""}},
+        notify_config=NotifyConfig(provider="telegram"),
     )
 
     assert routes == ()

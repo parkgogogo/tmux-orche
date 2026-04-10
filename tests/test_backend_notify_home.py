@@ -189,6 +189,33 @@ def test_ensure_session_stores_tmux_bridge_notify_binding(xdg_runtime, tmp_path,
     }
 
 
+def test_ensure_session_stores_telegram_notify_binding(xdg_runtime, tmp_path, monkeypatch):
+    source_home = tmp_path / "source-codex"
+    source_home.mkdir()
+    (source_home / "hooks").mkdir()
+    (source_home / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_SOURCE_HOME", source_home)
+    monkeypatch.setattr(backend, "DEFAULT_CODEX_HOME_ROOT", tmp_path / "managed")
+    monkeypatch.setattr(backend, "ensure_pane", lambda session, cwd, agent, **kwargs: "%1")
+    monkeypatch.setattr(backend, "ensure_agent_running", lambda *args, **kwargs: "%1")
+    _stub_managed_startup_ready(monkeypatch)
+
+    backend.ensure_session(
+        "notify-bound",
+        tmp_path,
+        "codex",
+        notify_to="telegram",
+        notify_target="12345",
+    )
+    meta = backend.load_meta("notify-bound")
+
+    assert meta["notify_binding"] == {
+        "provider": "telegram",
+        "target": "12345",
+    }
+
+
 def test_ensure_agent_running_does_not_reference_inline_locals_when_absent(xdg_runtime, tmp_path, monkeypatch):
     plugin = backend.get_agent("codex")
     backend.save_meta(

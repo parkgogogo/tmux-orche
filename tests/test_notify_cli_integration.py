@@ -288,6 +288,47 @@ def test_notify_hidden_command_uses_session_notify_binding_for_tmux_bridge(xdg_r
     assert captured[0][0] == "target-session"
 
 
+def test_notify_hidden_command_uses_session_notify_binding_for_telegram(xdg_runtime, monkeypatch):
+    fake_client = FakeHTTPClient()
+    monkeypatch.setattr("notify.telegram.UrllibHTTPClient", StubHTTPClientFactory(fake_client))
+    write_runtime_config(
+        xdg_runtime["config_path"],
+        {
+            "notify_enabled": True,
+            "telegram_bot_token": "bot-token",
+            "session": "other-session",
+            "cwd": "/tmp/other",
+        },
+    )
+
+    from backend import save_meta
+
+    save_meta(
+        "repo-codex-main",
+        {
+            "session": "repo-codex-main",
+            "cwd": "/tmp/repo",
+            "agent": "codex",
+            "pane_id": "%1",
+            "notify_binding": {
+                "provider": "telegram",
+                "target": "12345",
+            },
+        },
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["notify-internal", "--session", "repo-codex-main"],
+        input='{"event":"turn-complete","summary":"Done"}',
+    )
+
+    assert result.exit_code == 0
+    assert "notify ok: provider=telegram detail=200" in result.output
+    assert fake_client.requests[0]["url"] == "https://api.telegram.org/botbot-token/sendMessage"
+    assert fake_client.requests[0]["json_body"]["chat_id"] == "12345"
+
+
 def test_notify_hidden_command_deduplicates_same_turn_event(xdg_runtime, monkeypatch):
     fake_client = FakeHTTPClient()
     monkeypatch.setattr("notify.discord.UrllibHTTPClient", StubHTTPClientFactory(fake_client))

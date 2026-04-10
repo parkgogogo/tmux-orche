@@ -1501,6 +1501,43 @@ def test_open_passes_notify_binding_to_managed_session(xdg_runtime, monkeypatch)
     assert "open ok: session=project-codex-abc123" in result.output
 
 
+def test_open_passes_telegram_notify_binding_to_managed_session(xdg_runtime, monkeypatch):
+    runner = CliRunner()
+    project_dir = xdg_runtime["home"] / "project"
+    project_dir.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_ensure_session(session, cwd, agent, **kwargs):
+        captured["session"] = session
+        captured["cwd"] = cwd
+        captured["agent"] = agent
+        captured["kwargs"] = kwargs
+        return "%1"
+
+    monkeypatch.setattr(cli, "ensure_session", fake_ensure_session)
+    monkeypatch.setattr(cli.secrets, "token_hex", lambda nbytes: "abc123")
+    monkeypatch.setattr(cli, "append_action_history", lambda *args, **kwargs: None)
+
+    result = runner.invoke(
+        app,
+        [
+            "open",
+            "--cwd",
+            "~/project",
+            "--agent",
+            "codex",
+            "--notify",
+            "telegram:12345",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["session"] == "project-codex-abc123"
+    assert captured["kwargs"]["notify_to"] == "telegram"
+    assert captured["kwargs"]["notify_target"] == "12345"
+    assert "open ok: session=project-codex-abc123" in result.output
+
+
 def test_open_rejects_existing_session_name(xdg_runtime, monkeypatch):
     runner = CliRunner()
     project_dir = xdg_runtime["home"] / "project"

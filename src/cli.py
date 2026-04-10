@@ -157,6 +157,7 @@ def _print_notify_verbose(
     console.print(f"  provider: {notify_config.provider or '-'}")
     console.print(f"  discord.bot_token: {_configured_label(notify_config.discord.bot_token)}")
     console.print(f"  discord.webhook_url: {_configured_label(notify_config.discord.webhook_url)}")
+    console.print(f"  telegram.bot_token: {_configured_label(notify_config.telegram.bot_token)}")
     console.print(
         "  discord.mention_user_id: "
         f"{notify_config.discord.mention_user_id or '-'}"
@@ -295,8 +296,8 @@ def _parse_notify_binding(value: Optional[str]) -> tuple[Optional[str], Optional
         raise OrcheError("--notify must be in the form <provider>:<target>")
     if provider == "tmux":
         provider = "tmux-bridge"
-    if provider not in {"discord", "tmux-bridge"}:
-        raise OrcheError("--notify provider must be one of: discord, tmux")
+    if provider not in {"discord", "telegram", "tmux-bridge"}:
+        raise OrcheError("--notify provider must be one of: discord, telegram, tmux")
     return provider, target
 
 
@@ -613,7 +614,11 @@ def open_session(
     agent: str = typer.Option(..., help=f"Agent name. Supported: {', '.join(supported_agent_names())}."),
     cwd: Optional[Path] = typer.Option(None, callback=_resolve_cwd, file_okay=False, dir_okay=True, resolve_path=False, help="Working directory for the session. Defaults to the current directory."),
     name: Optional[str] = typer.Option(None, "--name", help="Explicit session name. Defaults to <repo>-<agent>-<random>."),
-    notify: Optional[str] = typer.Option(None, "--notify", help="Notify target in the form discord:<channel-id> or tmux:<session>."),
+    notify: Optional[str] = typer.Option(
+        None,
+        "--notify",
+        help="Notify target in the form discord:<channel-id>, telegram:<chat-id>, or tmux:<session>.",
+    ),
     prompt: Optional[str] = typer.Option(None, "--prompt", help="Prompt text to send immediately after opening a managed session."),
 ) -> None:
     try:

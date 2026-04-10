@@ -88,7 +88,12 @@ def resolve_routes(
 ) -> Sequence[ResolvedRoute]:
     normalized_channel_id = re.sub(r"\s+", "", str(explicit_channel_id or ""))
     if normalized_channel_id:
-        return (ResolvedRoute(provider="discord", target=normalized_channel_id, session=event.session),)
+        explicit_provider = "discord"
+        raw_binding = runtime_config.get("notify_binding")
+        binding = raw_binding if isinstance(raw_binding, Mapping) else {}
+        if str(binding.get("provider") or "").strip() == "telegram":
+            explicit_provider = "telegram"
+        return (ResolvedRoute(provider=explicit_provider, target=normalized_channel_id, session=event.session),)
 
     raw_binding = runtime_config.get("notify_binding")
     binding = raw_binding if isinstance(raw_binding, Mapping) else {}
@@ -97,6 +102,20 @@ def resolve_routes(
     if binding_provider:
         if binding_provider == "discord":
             binding_target = re.sub(r"\s+", "", binding_target)
+        if binding_provider == "telegram" and binding_target:
+            metadata = {
+                key: value
+                for key, value in dict(binding).items()
+                if key not in {"provider", "target", "session"} and str(value).strip()
+            }
+            return (
+                ResolvedRoute(
+                    provider="telegram",
+                    target=binding_target,
+                    session=event.session,
+                    metadata=metadata,
+                ),
+            )
         if binding_target:
             metadata = {
                 key: value

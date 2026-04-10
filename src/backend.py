@@ -63,7 +63,7 @@ DEFAULT_CODEX_SOURCE_HOME = codex_agent_module.DEFAULT_CODEX_SOURCE_HOME
 DEFAULT_CLAUDE_COMMAND = claude_agent_module.DEFAULT_CLAUDE_COMMAND
 DEFAULT_CLAUDE_SOURCE_HOME = claude_agent_module.DEFAULT_CLAUDE_SOURCE_HOME
 DEFAULT_CLAUDE_SOURCE_CONFIG_PATH = claude_agent_module.DEFAULT_CLAUDE_SOURCE_CONFIG_PATH
-SUPPORTED_NOTIFY_PROVIDERS = ("discord", "tmux-bridge")
+SUPPORTED_NOTIFY_PROVIDERS = ("discord", "telegram", "tmux-bridge")
 CONFIG_KEY_MAP = {
     "claude.command": "claude_command",
     "claude.home-path": "claude_home_path",
@@ -74,6 +74,7 @@ CONFIG_KEY_MAP = {
     "inline.max-sessions": "max_inline_sessions",
     "managed.ttl-seconds": "managed_session_ttl_seconds",
     "notify.enabled": "notify_enabled",
+    "telegram.bot-token": "telegram_bot_token",
 }
 
 
@@ -876,6 +877,11 @@ def _read_notify_binding(payload: Mapping[str, Any]) -> Dict[str, str]:
                 "provider": "tmux-bridge",
                 "target": target,
             }
+        if provider == "telegram" and target:
+            return {
+                "provider": "telegram",
+                "target": target,
+            }
     legacy_routes = payload.get("notify_routes")
     if isinstance(legacy_routes, Mapping):
         discord_route = legacy_routes.get("discord")
@@ -893,6 +899,14 @@ def _read_notify_binding(payload: Mapping[str, Any]) -> Dict[str, str]:
             if target:
                 return {
                     "provider": "tmux-bridge",
+                    "target": target,
+                }
+        telegram_route = legacy_routes.get("telegram")
+        if isinstance(telegram_route, Mapping):
+            target = str(telegram_route.get("chat_id") or telegram_route.get("target") or "").strip()
+            if target:
+                return {
+                    "provider": "telegram",
                     "target": target,
                 }
     discord_channel_id = str(payload.get("discord_channel_id") or "").strip()
@@ -914,6 +928,13 @@ def build_notify_binding(provider: str, target: str) -> Dict[str, str]:
             "provider": "discord",
             "target": channel_id,
             "session": derive_discord_session(channel_id),
+        }
+    if normalized_provider == "telegram":
+        if not normalized_target:
+            raise OrcheError("--notify-target is required for --notify-to telegram")
+        return {
+            "provider": "telegram",
+            "target": normalized_target,
         }
     if not normalized_target:
         raise OrcheError("--notify-target is required for --notify-to tmux-bridge")
@@ -1060,6 +1081,7 @@ def default_config_values() -> Dict[str, Any]:
         "discord_bot_token": "",
         "discord_channel_id": "",
         "discord_webhook_url": "",
+        "telegram_bot_token": "",
         "max_inline_sessions": DEFAULT_MAX_INLINE_SESSIONS,
         "notify_enabled": True,
         "managed_session_ttl_seconds": DEFAULT_MANAGED_SESSION_TTL_SECONDS,
@@ -1122,6 +1144,7 @@ def default_config_value(key: str) -> Any:
         "inline.max-sessions": DEFAULT_MAX_INLINE_SESSIONS,
         "managed.ttl-seconds": DEFAULT_MANAGED_SESSION_TTL_SECONDS,
         "notify.enabled": True,
+        "telegram.bot-token": "",
     }
     return defaults[key]
 

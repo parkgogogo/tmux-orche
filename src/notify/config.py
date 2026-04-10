@@ -55,6 +55,12 @@ class DiscordNotifyConfig:
 
 
 @dataclass(frozen=True)
+class TelegramNotifyConfig:
+    bot_token: str = ""
+    timeout_seconds: int = 8
+
+
+@dataclass(frozen=True)
 class NotifyConfig:
     enabled: bool = True
     provider: str = "discord"
@@ -64,6 +70,7 @@ class NotifyConfig:
     max_message_chars: int = 1500
     summary_max_chars: int = 1200
     discord: DiscordNotifyConfig = field(default_factory=DiscordNotifyConfig)
+    telegram: TelegramNotifyConfig = field(default_factory=TelegramNotifyConfig)
 
     @property
     def providers(self) -> Tuple[str, ...]:
@@ -97,6 +104,10 @@ def load_notify_config(
         ).strip(),
         timeout_seconds=_as_int(values.get("notify_timeout_seconds"), 8),
     )
+    telegram = TelegramNotifyConfig(
+        bot_token=str(environ.get("TELEGRAM_BOT_TOKEN") or values.get("telegram_bot_token") or "").strip(),
+        timeout_seconds=_as_int(values.get("notify_timeout_seconds"), 8),
+    )
     return NotifyConfig(
         enabled=_as_bool(values.get("notify_enabled"), True),
         provider=provider,
@@ -107,4 +118,5 @@ def load_notify_config(
         max_message_chars=max(1, _as_int(values.get("notify_max_message_chars"), 1500)),
         summary_max_chars=max(1, _as_int(values.get("notify_summary_max_chars"), 1200)),
         discord=discord,
+        telegram=telegram,
     )

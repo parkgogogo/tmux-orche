@@ -29,10 +29,16 @@ def test_registry_rejects_unknown_provider():
     registry = NotifierRegistry()
 
     with pytest.raises(NotifyConfigError):
-        registry.create_many(NotifyConfig(provider="telegram"))
+        registry.create_many(NotifyConfig(provider="pagerduty"))
 
 
 def test_default_registry_supports_tmux_bridge_provider():
     notifiers = DEFAULT_REGISTRY.create_many(NotifyConfig(provider="tmux-bridge"))
 
     assert [notifier.name for notifier in notifiers] == ["tmux-bridge"]
+
+
+def test_default_registry_supports_telegram_provider():
+    notifiers = DEFAULT_REGISTRY.create_many(NotifyConfig(provider="telegram"))
+
+    assert [notifier.name for notifier in notifiers] == ["telegram"]

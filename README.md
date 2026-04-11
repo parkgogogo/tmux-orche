@@ -76,6 +76,34 @@ If you want another agent to install `tmux-orche` for you, paste this raw guide 
 
 `https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/install.md`
 
+### Install SKILL (Recommended)
+
+Installing SKILL correctly for your agent can help them quickly learn how to use `orche`.
+
+For example, to install the `orche` skill from this repository for Codex:
+
+```bash
+mkdir -p ~/.codex/skills/orche
+curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/codex-claude/SKILL.md \
+  -o ~/.codex/skills/orche/SKILL.md
+```
+
+For Claude:
+
+```bash
+mkdir -p ~/.claude/skills/orche
+curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/codex-claude/SKILL.md \
+  -o ~/.claude/skills/orche/SKILL.md
+```
+
+For OpenClaw:
+
+```bash
+mkdir -p ~/.openclaw/skills/orche
+curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/openclaw/SKILL.md \
+  -o ~/.openclaw/skills/orche/SKILL.md
+```
+
 ## Commands
 
 `orche` exposes a small set of CLI commands that agents call directly to manage the orchestration loop:
@@ -97,13 +125,7 @@ There are also a few helper commands for advanced control:
 
 ## Usage Scenarios
 
-### 1. Codex and Claude Say Hello
-
-This is the simplest `orche` demo: a Codex agent and a Claude agent greet each other through a tmux-backed handoff, showing the basic loop in the smallest possible form.
-
-![Codex and Claude Say Hello](./assets/Ghostty.gif)
-
-### 2. Codex / Claude Multi-Agent Loop
+### 1. Codex / Claude Multi-Agent Loop
 
 Use `orche` when you want agents to collaborate inside tmux. For example, let Claude review while Codex writes code:
 
@@ -135,7 +157,7 @@ orche prompt repo-worker "refactor the auth module"
 
 *The image above shows a Codex supervisor using 2 Codex and 2 Claude agents to simultaneously perform code review.*
 
-### 3. OpenClaw Supervision Loop
+### 2. OpenClaw Supervision Loop
 
 When using OpenClaw, the configured model may not handle long-running tasks as well as Codex or Claude, especially for coding work. OpenClaw's built-in `acpx` also has many practical issues. A pragmatic approach is to use `orche` to let OpenClaw create Codex or Claude sessions and delegate tasks to them; when the work is done, Codex feeds the result back into the group chat, forming a closed loop.
 
@@ -157,35 +179,7 @@ orche prompt repo-worker "analyze the failing tests"
 
 OpenClaw opens the worker, the worker runs in tmux with durable state, and completion events route back through Discord so the supervisor can decide what happens next.
 
-### 4. Install SKILL (Recommended)
-
-Installing SKILL correctly for your agent can help them quickly learn how to use `orche`.
-
-For example, to install the `orche` skill from this repository for Codex:
-
-```bash
-mkdir -p ~/.codex/skills/orche
-curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/codex-claude/SKILL.md \
-  -o ~/.codex/skills/orche/SKILL.md
-```
-
-For Claude:
-
-```bash
-mkdir -p ~/.claude/skills/orche
-curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/codex-claude/SKILL.md \
-  -o ~/.claude/skills/orche/SKILL.md
-```
-
-For OpenClaw:
-
-```bash
-mkdir -p ~/.openclaw/skills/orche
-curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/openclaw/SKILL.md \
-  -o ~/.openclaw/skills/orche/SKILL.md
-```
-
-### 4. Codex and Claude Say Hello
+### 3. Codex and Claude Say Hello
 
 This is the smallest possible multi-agent loop: open one Claude session, open one Codex session, and let them exchange a short hello through `orche`.
 

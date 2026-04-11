@@ -123,7 +123,13 @@ curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/o
 
 ## 使用场景
 
-### 1. Codex / Claude 多 Agent 协作
+### 1. Codex 和 Claude 打招呼
+
+这是最简单的 `orche` 演示：一个 Codex agent 和一个 Claude agent 通过 tmux 承载的委派闭环互相打招呼，用最小形式展示基础协作流程。
+
+![Codex and Claude Say Hello](./assets/Ghostty.gif)
+
+### 2. Codex / Claude 多 Agent 协作
 
 用 `orche` 让多个 agent 在 tmux 里协同工作。例如让 Claude 做 review,Codex 写代码:
 
@@ -155,7 +161,7 @@ orche prompt repo-worker "重构 auth 模块"
 
 *上图展示了一个 Codex supervisor 同时调用 2 个 Codex 和 2 个 Claude agent 进行并行 code review 的场景。*
 
-### 2. OpenClaw 监督闭环
+### 3. OpenClaw 监督闭环
 
 使用 openclaw 的时候总是会遇到一些问题:
 
@@ -182,28 +188,6 @@ orche prompt repo-worker "分析一下失败的测试用例"
 ![OpenClaw 监督](./assets/openclaw-supervision-loop.png)
 
 OpenClaw 打开 worker,worker 在 tmux 里保留完整现场运行。完成事件通过 Discord 回传,supervisor 据此决定下一步调度。
-
-### 3. Codex 和 Claude 打招呼
-
-这是一个最小化的多 agent 闭环示例：先打开一个 Claude session，再打开一个 Codex session，然后让它们通过 `orche` 简单打个招呼。
-
-```bash
-# 先打开 Claude
-orche open --cwd ./repo --agent claude --name hello-claude
-
-# 打开 Codex，并把结果路由回 Claude
-orche open \
-  --cwd ./repo \
-  --agent codex \
-  --name hello-codex \
-  --notify tmux:hello-claude
-
-# 让它们互相打招呼
-orche prompt hello-codex "向 Claude 打个招呼，简短一点。"
-orche prompt hello-claude "回复 Codex 一个简短的 hello。"
-```
-
-<video src="./assets/hello.mp4" controls width="100%"></video>
 
 ## 配置
 

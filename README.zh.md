@@ -183,6 +183,28 @@ curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/o
   -o ~/.openclaw/skills/orche/SKILL.md
 ```
 
+### 4. Codex 和 Claude 打招呼
+
+这是一个最小化的多 agent 闭环示例：先打开一个 Claude session，再打开一个 Codex session，然后让它们通过 `orche` 简单打个招呼。
+
+```bash
+# 先打开 Claude
+orche open --cwd ./repo --agent claude --name hello-claude
+
+# 打开 Codex，并把结果路由回 Claude
+orche open \
+  --cwd ./repo \
+  --agent codex \
+  --name hello-codex \
+  --notify tmux:hello-claude
+
+# 让它们互相打招呼
+orche prompt hello-codex "向 Claude 打个招呼，简短一点。"
+orche prompt hello-claude "回复 Codex 一个简短的 hello。"
+```
+
+<video src="./assets/hello.mp4" controls width="100%"></video>
+
 ## 配置
 
 `orche` 的用户配置保存在 `~/.config/orche/config.json`（若设置了 `XDG_CONFIG_HOME`，则使用 `$XDG_CONFIG_HOME/orche/config.json`）。

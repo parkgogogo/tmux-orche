@@ -179,6 +179,28 @@ curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/o
   -o ~/.openclaw/skills/orche/SKILL.md
 ```
 
+### 4. Codex and Claude Say Hello
+
+This is the smallest possible multi-agent loop: open one Claude session, open one Codex session, and let them exchange a short hello through `orche`.
+
+```bash
+# Open Claude first
+orche open --cwd ./repo --agent claude --name hello-claude
+
+# Open Codex and route results back to Claude
+orche open \
+  --cwd ./repo \
+  --agent codex \
+  --name hello-codex \
+  --notify tmux:hello-claude
+
+# Let them greet each other
+orche prompt hello-codex "Say hello to Claude and keep it short."
+orche prompt hello-claude "Reply to Codex with a short hello."
+```
+
+<video src="./assets/hello.mp4" controls width="100%"></video>
+
 ## Configuration
 
 `orche` stores user configuration in `~/.config/orche/config.json` (or `$XDG_CONFIG_HOME/orche/config.json`).

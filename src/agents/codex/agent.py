@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from .runtime import DEFAULT_CODEX_SOURCE_HOME, default_codex_home_path, default_notify_hook_path, materialize_managed_codex_home, rewrite_codex_config
-from ..base import AgentPlugin, AgentRuntime, BridgeIO
+from ..base import AgentConfig, AgentPlugin, AgentRuntime, BridgeIO
 from ..common import DEFAULT_RUNTIME_HOME_ROOT, ensure_orche_shim, normalize_runtime_home, remove_runtime_home
 
 
@@ -127,13 +127,20 @@ class CodexAgent(AgentPlugin):
     runtime_label = "CODEX_HOME"
     login_prompts = ("Login with ChatGPT", "Please login")
 
+    def __init__(self, config: AgentConfig | None = None) -> None:
+        super().__init__(config=config)
+        runtime_home_root = self._config.get("runtime_home_root")
+        source_home = self._config.get("source_home")
+        self._runtime_home_root = Path(runtime_home_root or DEFAULT_RUNTIME_HOME_ROOT).expanduser()
+        self._source_home = Path(source_home or DEFAULT_CODEX_SOURCE_HOME).expanduser()
+
     def ensure_managed_runtime(self, session: str, *, cwd: Path, discord_channel_id: str | None) -> AgentRuntime:
-        target = default_codex_home_path(session)
-        materialize_managed_codex_home(DEFAULT_CODEX_SOURCE_HOME, target)
+        target = default_codex_home_path(session, self._runtime_home_root)
+        materialize_managed_codex_home(self._source_home, target)
         from ..common import write_notify_hook
 
         write_notify_hook(default_notify_hook_path(target))
-        rewrite_codex_config(target, session=session, cwd=cwd, discord_channel_id=discord_channel_id)
+        rewrite_codex_config(target, session=session, cwd=cwd, discord_channel_id=discord_channel_id, source_home=self._source_home)
         return AgentRuntime(home=str(target.resolve()), managed=True, label=self.runtime_label)
 
     def build_launch_command(self, *, cwd: Path, runtime: AgentRuntime, session: str, discord_channel_id: str | None, approve_all: bool) -> str:
@@ -194,3 +201,13 @@ class CodexAgent(AgentPlugin):
 
 
 PLUGINS = [CodexAgent()]
+
+__all__ = [
+    "CODEX_SUBMIT_SECONDS_PER_CHAR",
+    "CODEX_SUBMIT_SETTLE_MAX_SECONDS",
+    "CODEX_SUBMIT_SETTLE_MIN_SECONDS",
+    "CodexAgent",
+    "PLUGINS",
+    "READY_SURFACE_HINTS",
+    "codex_submit_settle_seconds",
+]

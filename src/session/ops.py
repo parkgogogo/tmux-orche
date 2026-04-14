@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import time
-import uuid
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional
 
-from agents import get_agent_plugin
+from tmux.bridge import bridge_resolve
 from tmux.client import tmux
-from tmux.query import TMUX_SESSION, _tmux_has_session, get_pane_info, list_panes, pane_exists, read_pane
+from tmux.query import TMUX_SESSION, _tmux_has_session, get_pane_info, pane_exists
 
 from .config import managed_session_ttl_seconds
-from .meta import _iter_meta_payloads, load_meta, log_exception, remove_meta, save_meta, session_key, session_lock, target_session_io_lock
+from .meta import _iter_meta_payloads, load_meta, log_exception, remove_meta, save_meta, session_key, session_lock
 
 
 def tmux_session_name(session: str) -> str:
@@ -61,7 +59,7 @@ def session_metadata_is_live(session: str, meta: Optional[Mapping[str, Any]] = N
     pane_id = str(payload.get("pane_id") or "").strip()
     if pane_id and pane_exists(pane_id):
         return True
-    resolved_pane_id = bridge_resolve(session_name)
+    resolved_pane_id = bridge_resolve(session_name, fallback_pane_id=pane_id)
     if resolved_pane_id and pane_exists(resolved_pane_id):
         return True
     if str(payload.get("tmux_mode") or "").strip() == "inline-pane":
@@ -122,7 +120,8 @@ def session_exists(session: str) -> bool:
         return True
     if meta:
         remove_meta(session_name)
-    return bool(bridge_resolve(session_name) or _tmux_has_session(tmux_session_name(session_name)))
+    fallback_pane_id = str(meta.get("pane_id") or "").strip() if meta else ""
+    return bool(bridge_resolve(session_name, fallback_pane_id=fallback_pane_id) or _tmux_has_session(tmux_session_name(session_name)))
 
 
 def expire_managed_sessions(*, now: Optional[float] = None, close_session_tree_fn=None) -> List[str]:
@@ -160,98 +159,10 @@ def _current_tmux_value(fmt: str) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _resolve_bridge_pane(session: str) -> str:
-    session_name = str(session or "").strip()
-    if not session_name:
-        raise RuntimeError("session is required")
-    for pane in list_panes():
-        if str(pane.get("pane_title") or "").strip() == session_name:
-            return str(pane.get("pane_id") or "").strip()
-    meta_pane_id = str(load_meta(session_name).get("pane_id") or "").strip()
-    if meta_pane_id and pane_exists(meta_pane_id):
-        return meta_pane_id
-    raise RuntimeError(f"Unknown session: {session_name}")
-
-
-def tmux_bridge(*args: str, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess[str]:
-    def bridge_result(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(["tmux-bridge", *args], returncode, stdout=stdout, stderr=stderr)
-
-    try:
-        if not args:
-            raise RuntimeError("tmux-bridge command is required")
-        command = args[0]
-        if command == "name":
-            pane_id, session = args[1], args[2]
-            tmux("select-pane", "-t", pane_id, "-T", session, check=True, capture=True)
-            result = bridge_result()
-        elif command == "resolve":
-            result = bridge_result(stdout=_resolve_bridge_pane(args[1]))
-        elif command == "read":
-            session, lines = args[1], max(int(args[2]), 1)
-            result = bridge_result(stdout=read_pane(_resolve_bridge_pane(session), lines))
-        elif command == "type":
-            session, text = args[1], args[2]
-            pane_id = _resolve_bridge_pane(session)
-            buffer_name = f"orche-{uuid.uuid4().hex}"
-            try:
-                tmux("load-buffer", "-b", buffer_name, "-", check=True, capture=True, input_text=text)
-                tmux("paste-buffer", "-t", pane_id, "-b", buffer_name, check=True, capture=True)
-            finally:
-                tmux("delete-buffer", "-b", buffer_name, check=False, capture=True)
-            result = bridge_result()
-        elif command == "keys":
-            pane_id = _resolve_bridge_pane(args[1])
-            tmux("send-keys", "-t", pane_id, *args[2:], check=True, capture=True)
-            result = bridge_result()
-        else:
-            raise RuntimeError(f"Unsupported tmux-bridge command: {command}")
-    except Exception as exc:
-        result = bridge_result(returncode=1, stderr=str(exc))
-        if check:
-            raise subprocess.CalledProcessError(result.returncode, result.args, output=result.stdout, stderr=result.stderr) from exc
-    return result if capture else bridge_result(returncode=result.returncode)
-
-
-def bridge_name_pane(pane_id: str, session: str) -> None:
-    tmux_bridge("name", pane_id, session, check=True, capture=True)
-
-
-def bridge_resolve(session: str) -> Optional[str]:
-    result = tmux_bridge("resolve", session, check=False, capture=True)
-    return result.stdout.strip() or None if result.returncode == 0 else None
-
-
-def bridge_read(session: str, lines: int = 200) -> str:
-    return tmux_bridge("read", session, str(lines), check=True, capture=True).stdout.rstrip("\n")
-
-
-def bridge_type(session: str, text: str) -> None:
-    if text:
-        tmux_bridge("read", session, "1", check=True, capture=True)
-        tmux_bridge("type", session, text, check=True, capture=True)
-
-
-def bridge_keys(session: str, keys: Union[Iterable[str], str]) -> None:
-    values = [keys] if isinstance(keys, str) else list(keys)
-    if values:
-        tmux_bridge("read", session, "1", check=True, capture=True)
-        tmux_bridge("keys", session, *values, check=True, capture=True)
-
-
-class _BridgeAdapter:
-    def type(self, session: str, text: str) -> None:
-        bridge_type(session, text)
-    def keys(self, session: str, keys: Sequence[str]) -> None:
-        bridge_keys(session, list(keys))
-
-
-BRIDGE = _BridgeAdapter()
-
-
 def attach_session(session: str, *, pane_id: str = "") -> str:
     meta = load_meta(session)
-    resolved_pane_id = pane_id or bridge_resolve(session) or str(meta.get("pane_id") or "")
+    fallback_pane_id = str(meta.get("pane_id") or "").strip()
+    resolved_pane_id = pane_id or bridge_resolve(session, fallback_pane_id=fallback_pane_id) or fallback_pane_id
     info = get_pane_info(resolved_pane_id) if resolved_pane_id else None
     target_tmux_session = str(meta.get("tmux_session") or "").strip()
     if info is not None:
@@ -274,14 +185,3 @@ def attach_session(session: str, *, pane_id: str = "") -> str:
     else:
         tmux("attach-session", "-t", target_tmux_session, check=True, capture=False)
     return target_tmux_session
-
-
-def deliver_notify_to_session(session: str, prompt: str) -> str:
-    with target_session_io_lock(session.strip()):
-        pane_id = bridge_resolve(session)
-        if not pane_id:
-            raise RuntimeError(f"notify target session not found: {session}")
-        target_meta = load_meta(session)
-        target_agent = str(target_meta.get("agent") or "").strip().lower() or "codex"
-        get_agent_plugin(target_agent).submit_prompt(session, prompt, bridge=BRIDGE)
-        return pane_id

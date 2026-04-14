@@ -19,7 +19,7 @@ else:
     from json_utils import JSONInputTooLargeError, read_json_file
     from paths import ensure_directories, locks_dir
 
-from .base import AgentPlugin, AgentRuntime, BridgeIO
+from .base import AgentConfig, AgentPlugin, AgentRuntime, BridgeIO
 from .common import (
     DEFAULT_RUNTIME_HOME_ROOT,
     ensure_orche_shim,
@@ -128,8 +128,9 @@ def _find_next_claude_prompt(lines: list[str], start_index: int) -> int | None:
     return None
 
 
-def default_claude_home_path(session: str) -> Path:
-    return DEFAULT_RUNTIME_HOME_ROOT / f"orche-claude-{session_key(session)}"
+def default_claude_home_path(session: str, runtime_home_root: Path | None = None) -> Path:
+    root = Path(runtime_home_root or DEFAULT_RUNTIME_HOME_ROOT)
+    return root / f"orche-claude-{session_key(session)}"
 
 
 def default_notify_hook_path(runtime_home: Path) -> Path:
@@ -140,35 +141,35 @@ def default_settings_path(runtime_home: Path) -> Path:
     return runtime_home / "settings.json"
 
 
-def claude_command_tokens() -> list[str]:
-    raw = str(DEFAULT_CLAUDE_COMMAND or "").strip() or "claude"
+def claude_command_tokens(command: str | None = None) -> list[str]:
+    raw = str(command or DEFAULT_CLAUDE_COMMAND or "").strip() or "claude"
     tokens = [token for token in shlex.split(raw) if token]
     return tokens or ["claude"]
 
 
-def claude_process_names() -> set[str]:
-    primary = Path(claude_command_tokens()[0]).name.lower()
+def claude_process_names(command: str | None = None) -> set[str]:
+    primary = Path(claude_command_tokens(command)[0]).name.lower()
     names = {"claude", "claude-code", "node"}
     if primary:
         names.add(primary)
     return names
 
 
-def source_claude_config_path() -> Path:
-    return Path(DEFAULT_CLAUDE_SOURCE_CONFIG_PATH).expanduser()
+def source_claude_config_path(config_path: Path | None = None) -> Path:
+    return Path(config_path or DEFAULT_CLAUDE_SOURCE_CONFIG_PATH).expanduser()
 
 
-def source_claude_config_backup_path() -> Path:
-    config_path = source_claude_config_path()
-    return config_path.with_name(config_path.name + SOURCE_CONFIG_BACKUP_SUFFIX)
+def source_claude_config_backup_path(config_path: Path | None = None) -> Path:
+    resolved_config_path = source_claude_config_path(config_path)
+    return resolved_config_path.with_name(resolved_config_path.name + SOURCE_CONFIG_BACKUP_SUFFIX)
 
 
-def source_claude_home_path() -> Path:
-    return Path(DEFAULT_CLAUDE_SOURCE_HOME).expanduser()
+def source_claude_home_path(home_path: Path | None = None) -> Path:
+    return Path(home_path or DEFAULT_CLAUDE_SOURCE_HOME).expanduser()
 
 
-def source_settings_path() -> Path:
-    return source_claude_home_path() / "settings.json"
+def source_settings_path(home_path: Path | None = None) -> Path:
+    return source_claude_home_path(home_path) / "settings.json"
 
 
 @contextlib.contextmanager
@@ -206,18 +207,18 @@ def _read_json_object(path: Path) -> dict[str, object]:
     return payload
 
 
-def sync_trust_to_source_config(cwd: Path) -> dict[str, object]:
-    config_path = source_claude_config_path()
+def sync_trust_to_source_config(cwd: Path, *, config_path: Path | None = None) -> dict[str, object]:
+    resolved_config_path = source_claude_config_path(config_path)
     target = str(cwd.resolve())
     with source_config_lock():
-        original = _read_json_object(config_path)
+        original = _read_json_object(resolved_config_path)
         projects = original.get("projects")
         if projects is None:
             projects_dict: dict[str, object] = {}
         elif isinstance(projects, dict):
             projects_dict = dict(projects)
         else:
-            raise RuntimeError(f"Refusing to rewrite invalid Claude projects config at {config_path}")
+            raise RuntimeError(f"Refusing to rewrite invalid Claude projects config at {resolved_config_path}")
         project_entry = projects_dict.get(target)
         if project_entry is None:
             project_payload: dict[str, object] = {}
@@ -232,9 +233,9 @@ def sync_trust_to_source_config(cwd: Path) -> dict[str, object]:
         updated = dict(original)
         updated["projects"] = projects_dict
         write_text_atomically(
-            config_path,
+            resolved_config_path,
             json.dumps(updated, indent=2, ensure_ascii=False) + "\n",
-            backup_path=source_claude_config_backup_path(),
+            backup_path=source_claude_config_backup_path(resolved_config_path),
         )
         return updated
 
@@ -328,6 +329,17 @@ class ClaudeAgent(AgentPlugin):
     runtime_label = "Claude settings"
     login_prompts = ("Please run /login", "Login required")
 
+    def __init__(self, config: AgentConfig | None = None) -> None:
+        super().__init__(config=config)
+        runtime_home_root = self._config.get("runtime_home_root")
+        claude_command = self._config.get("claude_command")
+        claude_home_path = self._config.get("claude_home_path")
+        claude_config_path = self._config.get("claude_config_path")
+        self._runtime_home_root = Path(runtime_home_root or DEFAULT_RUNTIME_HOME_ROOT).expanduser()
+        self._claude_command = str(claude_command or DEFAULT_CLAUDE_COMMAND).strip() or DEFAULT_CLAUDE_COMMAND
+        self._source_home_path = Path(claude_home_path or DEFAULT_CLAUDE_SOURCE_HOME).expanduser()
+        self._source_config_path = Path(claude_config_path or DEFAULT_CLAUDE_SOURCE_CONFIG_PATH).expanduser()
+
     def ensure_managed_runtime(
         self,
         session: str,
@@ -335,8 +347,8 @@ class ClaudeAgent(AgentPlugin):
         cwd: Path,
         discord_channel_id: str | None,
     ) -> AgentRuntime:
-        sync_trust_to_source_config(cwd)
-        target = default_claude_home_path(session)
+        sync_trust_to_source_config(cwd, config_path=self._source_config_path)
+        target = default_claude_home_path(session, self._runtime_home_root)
         target.mkdir(parents=True, exist_ok=True)
         write_notify_hook(default_notify_hook_path(target))
         runtime_settings_path = default_settings_path(target)
@@ -344,7 +356,7 @@ class ClaudeAgent(AgentPlugin):
             target,
             session=session,
             discord_channel_id=discord_channel_id,
-            source_payload=_read_json_object(source_settings_path()),
+            source_payload=_read_json_object(source_settings_path(self._source_home_path)),
         )
         serialized_settings = json.dumps(settings_payload, indent=2, ensure_ascii=False) + "\n"
         write_text_atomically(
@@ -400,14 +412,15 @@ class ClaudeAgent(AgentPlugin):
         return ["--dangerously-skip-permissions", *args]
 
     def command_tokens(self) -> list[str]:
-        return claude_command_tokens()
+        return claude_command_tokens(self._claude_command)
 
     def matches_process(self, pane_command: str, descendant_commands: list[str]) -> bool:
-        if pane_command in claude_process_names():
+        process_names = claude_process_names(self._claude_command)
+        if pane_command in process_names:
             return True
         for proc in descendant_commands:
             lowered = proc.lower()
-            if re_matches_claude(lowered):
+            if re_matches_claude(lowered, process_names=process_names):
                 return True
         return False
 
@@ -425,11 +438,12 @@ class ClaudeAgent(AgentPlugin):
             remove_runtime_home(runtime.home)
 
 
-def re_matches_claude(command: str) -> bool:
+def re_matches_claude(command: str, *, process_names: set[str] | None = None) -> bool:
     lowered = str(command or "").lower()
     if "claude" in lowered or "claude-code" in lowered:
         return True
-    return any(name != "node" and name in lowered for name in claude_process_names())
+    names = process_names or claude_process_names()
+    return any(name != "node" and name in lowered for name in names)
 
 
 PLUGINS = [ClaudeAgent()]

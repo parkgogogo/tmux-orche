@@ -6,8 +6,9 @@ import signal
 import time
 from typing import Any, Dict, Mapping, Tuple
 
-from session.meta import load_meta, save_meta, session_lock, shorten
+from session.meta import load_meta, save_meta, session_lock
 from session.ops import touch_session_event
+from text_utils import shorten
 from tmux.client import process_is_alive
 
 

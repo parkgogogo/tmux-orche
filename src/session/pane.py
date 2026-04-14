@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping
 
-from agents import AgentPlugin, get_agent_plugin
+from agents import AgentPlugin
+from text_utils import compact_text
 from tmux.client import process_cpu_percent, process_descendants
+from tmux.bridge import bridge_resolve
 from tmux.query import DEFAULT_CAPTURE_LINES, get_pane_info, pane_cursor_state, read_pane
 
-from .meta import compact_text, load_meta
-from .ops import bridge_resolve
+from .meta import load_meta
 
 
 WATCHDOG_ACTIVE_CPU_THRESHOLD = 5.0
@@ -57,13 +58,14 @@ def sample_pane_state(plugin: AgentPlugin, pane_id: str, *, capture_lines: int =
     }
 
 
-def sample_watchdog_state(session: str, *, pane_id: str = "", bridge_resolve_fn=None, get_agent_fn=None, agent_running_fn=None, load_meta_fn=None) -> Dict[str, Any]:
+def sample_watchdog_state(session: str, *, pane_id: str = "", bridge_resolve_fn=None, get_agent_fn, agent_running_fn=None, load_meta_fn=None) -> Dict[str, Any]:
     meta_loader = load_meta_fn or load_meta
     resolve_bridge = bridge_resolve_fn or bridge_resolve
-    resolve_agent = get_agent_fn or get_agent_plugin
+    resolve_agent = get_agent_fn
     meta = meta_loader(session)
     pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else {}
-    resolved_pane_id = str(pane_id or resolve_bridge(session) or pending_turn.get("pane_id") or meta.get("pane_id") or "").strip()
+    fallback_pane_id = str(pending_turn.get("pane_id") or meta.get("pane_id") or "").strip()
+    resolved_pane_id = str(pane_id or resolve_bridge(session, fallback_pane_id=fallback_pane_id) or fallback_pane_id).strip()
     plugin = resolve_agent(str(meta.get("agent") or "codex"))
     return sample_pane_state(plugin, resolved_pane_id, capture_lines=WATCHDOG_CAPTURE_LINES, agent_running_fn=agent_running_fn)
 

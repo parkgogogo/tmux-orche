@@ -7,16 +7,17 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-import agents.claude as claude_agent_module
-import agents.codex as codex_agent_module
-from agents import AgentPlugin, AgentRuntime, get_agent_plugin, supported_agents
-from agents.claude import default_claude_home_path
-from agents.common import ensure_orche_shim, normalize_runtime_home, remove_runtime_home
+from agents import AgentPlugin, AgentRuntime, supported_agents
+from agents.base import AgentConfig
+from agents.claude import ClaudeAgent, DEFAULT_CLAUDE_COMMAND, DEFAULT_CLAUDE_SOURCE_CONFIG_PATH, DEFAULT_CLAUDE_SOURCE_HOME
+from agents.codex import CodexAgent, DEFAULT_CODEX_SOURCE_HOME
+from agents.common import DEFAULT_RUNTIME_HOME_ROOT, ensure_orche_shim, normalize_runtime_home, remove_runtime_home
 from runtime.turn import mark_session_startup_ready, mark_session_startup_timeout
 from session.config import build_notify_binding, load_config, managed_session_ttl_seconds, max_inline_sessions, update_runtime_config
-from session.meta import _iter_meta_payloads, append_history_entry, inline_host_lock, load_meta, log_exception, save_meta, session_lock
-from session.ops import _current_tmux_value, bridge_name_pane, managed_session_last_event_at, session_metadata_is_live, tmux_session_name, touch_session_event
+from session.meta import _iter_meta_payloads, append_history_entry, inline_host_lock, load_meta, log_exception, save_meta, session_lock, target_session_io_lock
+from session.ops import _current_tmux_value, managed_session_last_event_at, session_metadata_is_live, tmux_session_name, touch_session_event
 from session.pane import observable_progress_detected, sample_pane_state
+from tmux.bridge import bridge_keys, bridge_name_pane, bridge_resolve, bridge_type
 from tmux.client import process_descendants, tmux
 from tmux.query import (
     DEFAULT_CAPTURE_LINES,
@@ -38,11 +39,7 @@ DEFAULT_MAX_INLINE_SESSIONS = 4
 STARTUP_TIMEOUT = 90.0
 CLAUDE_STARTUP_GRACE_SECONDS = 2.0
 LAUNCH_ERROR_PREFIX = "orche launch error:"
-DEFAULT_CODEX_HOME_ROOT = codex_agent_module.DEFAULT_RUNTIME_HOME_ROOT
-DEFAULT_CODEX_SOURCE_HOME = codex_agent_module.DEFAULT_CODEX_SOURCE_HOME
-DEFAULT_CLAUDE_COMMAND = claude_agent_module.DEFAULT_CLAUDE_COMMAND
-DEFAULT_CLAUDE_SOURCE_HOME = claude_agent_module.DEFAULT_CLAUDE_SOURCE_HOME
-DEFAULT_CLAUDE_SOURCE_CONFIG_PATH = claude_agent_module.DEFAULT_CLAUDE_SOURCE_CONFIG_PATH
+DEFAULT_CODEX_HOME_ROOT = DEFAULT_RUNTIME_HOME_ROOT
 
 
 class AgentStartupBlockedError(RuntimeError):
@@ -50,13 +47,25 @@ class AgentStartupBlockedError(RuntimeError):
 
 
 def get_agent(name: str) -> AgentPlugin:
+    key = str(name or "").strip().lower()
     config = load_config()
-    claude_agent_module.DEFAULT_CLAUDE_COMMAND = str(config.get("claude_command") or "").strip() or DEFAULT_CLAUDE_COMMAND
     claude_home_path = str(config.get("claude_home_path") or "").strip()
-    claude_agent_module.DEFAULT_CLAUDE_SOURCE_HOME = Path(claude_home_path).expanduser() if claude_home_path else DEFAULT_CLAUDE_SOURCE_HOME
     claude_config_path = str(config.get("claude_config_path") or "").strip()
-    claude_agent_module.DEFAULT_CLAUDE_SOURCE_CONFIG_PATH = Path(claude_config_path).expanduser() if claude_config_path else DEFAULT_CLAUDE_SOURCE_CONFIG_PATH
-    return get_agent_plugin(name)
+    runtime_home_root = str(config.get("runtime_home_root") or "").strip()
+    source_home = str(config.get("source_home") or "").strip()
+    plugin_config: AgentConfig = {
+        "claude_command": str(config.get("claude_command") or "").strip() or DEFAULT_CLAUDE_COMMAND,
+        "claude_home_path": Path(claude_home_path).expanduser() if claude_home_path else DEFAULT_CLAUDE_SOURCE_HOME,
+        "claude_config_path": Path(claude_config_path).expanduser() if claude_config_path else DEFAULT_CLAUDE_SOURCE_CONFIG_PATH,
+        "runtime_home_root": Path(runtime_home_root).expanduser() if runtime_home_root else DEFAULT_CODEX_HOME_ROOT,
+        "source_home": Path(source_home).expanduser() if source_home else DEFAULT_CODEX_SOURCE_HOME,
+    }
+    if key == "codex":
+        return CodexAgent(config=plugin_config)
+    if key == "claude":
+        return ClaudeAgent(config=plugin_config)
+    supported = ", ".join(supported_agents())
+    raise ValueError(f"Unsupported agent: {name}. Supported agents: {supported}")
 
 
 def supported_agent_names() -> Tuple[str, ...]:
@@ -64,12 +73,27 @@ def supported_agent_names() -> Tuple[str, ...]:
 
 
 def prepare_managed_runtime(plugin: AgentPlugin, session: str, *, cwd: Path, discord_channel_id: Optional[str]) -> AgentRuntime:
-    if plugin.name == "codex":
-        codex_agent_module.DEFAULT_RUNTIME_HOME_ROOT = DEFAULT_CODEX_HOME_ROOT
-        codex_agent_module.DEFAULT_CODEX_SOURCE_HOME = DEFAULT_CODEX_SOURCE_HOME
-    elif plugin.name == "claude":
-        claude_agent_module.DEFAULT_RUNTIME_HOME_ROOT = default_claude_home_path(session).parent
     return plugin.ensure_managed_runtime(session, cwd=cwd, discord_channel_id=discord_channel_id)
+
+
+def deliver_notify_to_session(session: str, prompt: str) -> str:
+    with target_session_io_lock(session.strip()):
+        target_meta = load_meta(session)
+        fallback_pane_id = str(target_meta.get("pane_id") or "").strip()
+        pane_id = bridge_resolve(session, fallback_pane_id=fallback_pane_id)
+        if not pane_id:
+            raise RuntimeError(f"notify target session not found: {session}")
+
+        class _FallbackBridge:
+            def type(self, target_session: str, text: str) -> None:
+                bridge_type(target_session, text, fallback_pane_id=pane_id)
+
+            def keys(self, target_session: str, keys: Sequence[str]) -> None:
+                bridge_keys(target_session, list(keys), fallback_pane_id=pane_id)
+
+        target_agent = str(target_meta.get("agent") or "").strip().lower() or "codex"
+        get_agent(target_agent).submit_prompt(session, prompt, bridge=_FallbackBridge())
+        return pane_id
 
 
 def runtime_home_from_meta(meta: Dict[str, Any]) -> str:
@@ -428,8 +452,6 @@ def append_action_history(session: str, cwd: Path, agent: str, action: str, **fi
 
 
 def ensure_managed_codex_home(session: str, *, cwd: Path, discord_channel_id: Optional[str]) -> Path:
-    codex_agent_module.DEFAULT_RUNTIME_HOME_ROOT = DEFAULT_CODEX_HOME_ROOT
-    codex_agent_module.DEFAULT_CODEX_SOURCE_HOME = DEFAULT_CODEX_SOURCE_HOME
     return Path(prepare_managed_runtime(get_agent("codex"), session, cwd=cwd, discord_channel_id=discord_channel_id).home)
 
 

@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from session.meta import session_key, window_name
+from text_utils import session_key, window_name
 
 from .client import tmux
 

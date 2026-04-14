@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
+AgentConfig = Mapping[str, Any]
+
 
 @dataclass(frozen=True)
 class AgentRuntime:
@@ -27,6 +29,9 @@ class AgentPlugin(ABC):
     runtime_option_name: str = "--runtime-home"
     login_prompts: tuple[str, ...] = ()
     ready_streak_required: int = 2
+
+    def __init__(self, config: AgentConfig | None = None) -> None:
+        self._config = dict(config or {})
 
     @abstractmethod
     def ensure_managed_runtime(

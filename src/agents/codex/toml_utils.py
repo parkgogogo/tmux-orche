@@ -165,3 +165,26 @@ def upsert_hide_rate_limit_model_nudge(content: str, *, enabled: bool) -> str:
 def upsert_codex_hooks_feature(content: str, *, enabled: bool) -> str:
     return _upsert_table_setting(content, header_re=TOML_FEATURES_HEADER_RE, header_name="features", matcher=TOML_CODEX_HOOKS_RE, setting_line=render_notice_boolean_setting("codex_hooks", enabled))
 
+
+__all__ = [
+    "TOML_CODEX_HOOKS_RE",
+    "TOML_FEATURES_HEADER_RE",
+    "TOML_HIDE_RATE_LIMIT_MODEL_NUDGE_RE",
+    "TOML_NOTICE_HEADER_RE",
+    "TOML_NOTIFY_KEY_RE",
+    "TOML_PROJECT_HEADER_RE",
+    "TOML_TABLE_HEADER_RE",
+    "TOML_TRUST_LEVEL_RE",
+    "TOML_UPDATE_CHECK_RE",
+    "render_notice_boolean_setting",
+    "render_project_trust_block",
+    "render_update_check_setting",
+    "strip_notify_assignments",
+    "upsert_codex_hooks_feature",
+    "upsert_hide_rate_limit_model_nudge",
+    "upsert_project_trust",
+    "upsert_top_level_notify",
+    "upsert_top_level_setting",
+    "upsert_update_check_setting",
+    "validate_toml_document",
+]

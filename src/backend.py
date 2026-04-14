@@ -42,6 +42,7 @@ from runtime.agent import (
     runtime_label_from_meta,
     session_launch_mode,
     supported_agent_names,
+    deliver_notify_to_session,
     wait_for_agent_process_start,
     wait_for_agent_ready,
     wait_for_managed_startup_ready,
@@ -79,16 +80,13 @@ from runtime.watchdog import (
 from session import (
     DEFAULT_MANAGED_SESSION_TTL_SECONDS,
     DEFAULT_MAX_INLINE_SESSIONS,
-    _is_prompt_fragment,
     _iter_meta_payloads,
     _read_notify_binding,
     build_notify_binding,
-    compact_text,
     config_key_field,
     default_config_value,
     default_session_name,
     derive_discord_session,
-    extract_summary_candidate,
     get_config_value,
     list_config_values,
     load_config,
@@ -116,12 +114,6 @@ from session import (
     update_runtime_config,
     validate_discord_channel_id,
     validate_notify_provider,
-    bridge_keys,
-    bridge_name_pane,
-    bridge_read,
-    bridge_resolve,
-    bridge_type,
-    deliver_notify_to_session,
     attach_session,
     expire_managed_sessions,
     list_sessions,
@@ -129,8 +121,9 @@ from session import (
     sample_watchdog_state,
     observable_progress_detected,
     recent_capture_excerpt,
-    turn_delta,
 )
+from text_utils import _is_prompt_fragment, compact_text, extract_summary_candidate, turn_delta
+from tmux.bridge import bridge_keys, bridge_name_pane, bridge_read, bridge_resolve, bridge_type
 from tmux import (
     DEFAULT_CAPTURE_LINES,
     LEGACY_TMUX_SESSION,
@@ -303,7 +296,8 @@ def latest_turn_summary(session: str) -> str:
     if pending_turn:
         plugin = get_agent(str(meta.get("agent") or "codex"))
         prompt = str(pending_turn.get("prompt") or "")
-        pane_id = str((bridge_resolve(session) or pending_turn.get("pane_id") or meta.get("pane_id") or "")).strip()
+        fallback_pane_id = str(pending_turn.get("pane_id") or meta.get("pane_id") or "").strip()
+        pane_id = str(bridge_resolve(session, fallback_pane_id=fallback_pane_id) or fallback_pane_id).strip()
         summary = _completion_summary_from_capture(plugin, capture=read_pane(pane_id, DEFAULT_CAPTURE_LINES) if pane_id else "", before_capture=str(pending_turn.get("before_capture") or ""), prompt=prompt)
         if summary:
             complete_pending_turn(session, summary=summary)
@@ -317,7 +311,8 @@ def build_status(session: str) -> Dict[str, Any]:
     meta = load_meta(session)
     if not meta:
         raise OrcheError(f"Unknown session: {session}")
-    pane_id = bridge_resolve(session) or str(meta.get("pane_id") or "")
+    fallback_pane_id = str(meta.get("pane_id") or "").strip()
+    pane_id = bridge_resolve(session, fallback_pane_id=fallback_pane_id) or fallback_pane_id
     info = get_pane_info(pane_id) if pane_id else None
     plugin = get_agent(str(meta.get("agent") or "codex"))
     pending_turn = meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else {}
@@ -343,9 +338,10 @@ def current_session_id() -> str:
 
 
 def cancel_session(session: str) -> str:
-    _cwd, agent, _meta = resolve_session_context(session=session)
-    get_agent(agent or "codex").interrupt(session, bridge=bridge_adapter())
-    return bridge_resolve(session) or "-"
+    _cwd, agent, meta = resolve_session_context(session=session)
+    fallback_pane_id = str(meta.get("pane_id") or "").strip()
+    get_agent(agent or "codex").interrupt(session, bridge=bridge_adapter(session, fallback_pane_id=fallback_pane_id))
+    return bridge_resolve(session, fallback_pane_id=fallback_pane_id) or "-"
 
 
 def _close_session_single(session: str) -> str:
@@ -353,7 +349,8 @@ def _close_session_single(session: str) -> str:
     if not meta:
         return "-"
     plugin = get_agent(str(meta.get("agent") or "codex"))
-    pane_id = bridge_resolve(session) or str(meta.get("pane_id") or "")
+    fallback_pane_id = str(meta.get("pane_id") or "").strip()
+    pane_id = bridge_resolve(session, fallback_pane_id=fallback_pane_id) or fallback_pane_id
     info = get_pane_info(pane_id) if pane_id and pane_exists(pane_id) else None
     target_tmux_session = str((info or {}).get("session_name") or meta.get("tmux_session") or "").strip() or ensure_tmux_session(session, Path(str(meta.get("cwd") or ".")))
     with contextlib.suppress(Exception):
@@ -381,7 +378,8 @@ def close_session_tree(session: str, *, reason: str = "", _visited: Optional[Set
     if session_name in visited:
         return "-"
     visited.add(session_name)
-    root_pane = bridge_resolve(session_name) or str(load_meta(session_name).get("pane_id") or "") or "-"
+    fallback_pane_id = str(load_meta(session_name).get("pane_id") or "").strip()
+    root_pane = bridge_resolve(session_name, fallback_pane_id=fallback_pane_id) or fallback_pane_id or "-"
     for child in session_children(session_name):
         close_session_tree(child, reason=reason, _visited=visited)
     _close_session_single(session_name)
@@ -392,10 +390,14 @@ def close_session(session: str) -> str:
     return close_session_tree(session)
 
 
-def bridge_adapter():
+def bridge_adapter(session: str = "", *, fallback_pane_id: str = ""):
     class _Bridge:
-        def type(self, session: str, text: str) -> None:
-            bridge_type(session, text)
-        def keys(self, session: str, keys) -> None:
-            bridge_keys(session, keys)
+        def type(self, target_session: str, text: str) -> None:
+            resolved_session = target_session or session
+            bridge_type(resolved_session, text, fallback_pane_id=fallback_pane_id)
+
+        def keys(self, target_session: str, keys) -> None:
+            resolved_session = target_session or session
+            bridge_keys(resolved_session, keys, fallback_pane_id=fallback_pane_id)
+
     return _Bridge()

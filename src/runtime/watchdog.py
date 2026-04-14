@@ -10,9 +10,10 @@ from typing import Any, Callable, Dict, Mapping
 
 from agents.common import orche_bootstrap_command
 from session.config import _read_notify_binding
-from session.meta import extract_summary_candidate, load_meta, log_event, shorten, turn_delta
+from session.meta import load_meta, log_event
 from session.ops import touch_session_event
 from session.pane import observable_progress_detected, recent_capture_excerpt, sample_watchdog_state
+from text_utils import extract_summary_candidate, shorten, turn_delta
 from tmux.client import process_is_alive
 
 from .turn import _current_turn_entry, release_turn_notification, update_watchdog_metadata

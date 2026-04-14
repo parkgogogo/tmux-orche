@@ -42,8 +42,9 @@ SOURCE_CONFIG_LOCK_NAME = "codex-source-config"
 SOURCE_CONFIG_BACKUP_SUFFIX = ".orche.bak"
 
 
-def default_codex_home_path(session: str) -> Path:
-    return DEFAULT_RUNTIME_HOME_ROOT / f"orche-codex-{session_key(session)}"
+def default_codex_home_path(session: str, runtime_home_root: Path | None = None) -> Path:
+    root = Path(runtime_home_root or DEFAULT_RUNTIME_HOME_ROOT)
+    return root / f"orche-codex-{session_key(session)}"
 
 
 def default_notify_hook_path(codex_home: Path) -> Path:
@@ -54,16 +55,17 @@ def default_hooks_path(codex_home: Path) -> Path:
     return codex_home / "hooks.json"
 
 
-def source_hooks_path() -> Path:
-    return default_hooks_path(DEFAULT_CODEX_SOURCE_HOME)
+def source_hooks_path(source_home: Path | None = None) -> Path:
+    return default_hooks_path(Path(source_home or DEFAULT_CODEX_SOURCE_HOME))
 
 
-def source_codex_config_path() -> Path:
-    return DEFAULT_CODEX_SOURCE_HOME / "config.toml"
+def source_codex_config_path(source_home: Path | None = None) -> Path:
+    return Path(source_home or DEFAULT_CODEX_SOURCE_HOME) / "config.toml"
 
 
-def source_codex_config_backup_path() -> Path:
-    return source_codex_config_path().with_name(source_codex_config_path().name + SOURCE_CONFIG_BACKUP_SUFFIX)
+def source_codex_config_backup_path(source_home: Path | None = None) -> Path:
+    config_path = source_codex_config_path(source_home)
+    return config_path.with_name(config_path.name + SOURCE_CONFIG_BACKUP_SUFFIX)
 
 
 def render_hook_command(hook_path: Path, *, session: str, discord_channel_id: str | None, status: str | None = None) -> str:
@@ -189,8 +191,8 @@ def source_config_lock(*, timeout: float = 5.0):
             path.unlink()
 
 
-def sync_trust_to_source_config(cwd: Path) -> str:
-    config_path = source_codex_config_path()
+def sync_trust_to_source_config(cwd: Path, *, source_home: Path | None = None) -> str:
+    config_path = source_codex_config_path(source_home)
     with source_config_lock():
         original = read_text_or_empty(config_path)
         if original:
@@ -198,7 +200,7 @@ def sync_trust_to_source_config(cwd: Path) -> str:
         updated = upsert_project_trust(original, cwd)
         if updated != original:
             validate_toml_document(updated, label=str(config_path))
-            write_text_atomically(config_path, updated, backup_path=source_codex_config_backup_path())
+            write_text_atomically(config_path, updated, backup_path=source_codex_config_backup_path(source_home))
         return updated
 
 
@@ -246,10 +248,17 @@ def materialize_managed_codex_home(source_home: Path, target_home: Path) -> None
     cleanup_managed_codex_home(target_home)
 
 
-def rewrite_codex_config(codex_home: Path, *, session: str, cwd: Path, discord_channel_id: str | None) -> None:
+def rewrite_codex_config(
+    codex_home: Path,
+    *,
+    session: str,
+    cwd: Path,
+    discord_channel_id: str | None,
+    source_home: Path | None = None,
+) -> None:
     config_toml_path = codex_home / "config.toml"
     hooks_json_path = default_hooks_path(codex_home)
-    base_content = sync_trust_to_source_config(cwd)
+    base_content = sync_trust_to_source_config(cwd, source_home=source_home)
     notify_line = render_notify_assignment(default_notify_hook_path(codex_home), session=session, discord_channel_id=discord_channel_id)
     updated = "".join(strip_notify_assignments(base_content.splitlines(keepends=True)))
     updated = upsert_update_check_setting(updated, enabled=False)
@@ -260,3 +269,26 @@ def rewrite_codex_config(codex_home: Path, *, session: str, cwd: Path, discord_c
     write_text_atomically(config_toml_path, updated)
     hooks_payload = build_hooks_payload(codex_home, session=session, discord_channel_id=discord_channel_id, source_payload=_read_json_object(source_hooks_path()))
     write_text_atomically(hooks_json_path, json.dumps(hooks_payload, indent=2, ensure_ascii=False) + "\n")
+
+
+__all__ = [
+    "DEFAULT_CODEX_SOURCE_HOME",
+    "DEFAULT_RUNTIME_HOME_ROOT",
+    "SOURCE_CONFIG_BACKUP_SUFFIX",
+    "SOURCE_CONFIG_LOCK_NAME",
+    "build_hooks_payload",
+    "cleanup_managed_codex_home",
+    "default_codex_home_path",
+    "default_hooks_path",
+    "default_notify_hook_path",
+    "materialize_managed_codex_home",
+    "read_text_or_empty",
+    "render_hook_command",
+    "render_notify_assignment",
+    "rewrite_codex_config",
+    "source_codex_config_backup_path",
+    "source_codex_config_path",
+    "source_config_lock",
+    "source_hooks_path",
+    "sync_trust_to_source_config",
+]

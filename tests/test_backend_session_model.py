@@ -7,7 +7,7 @@ import pytest
 import backend
 import cli
 from agents import AgentRuntime
-from session.meta import load_meta
+from session.store import load_meta
 
 pytestmark = pytest.mark.unit
 

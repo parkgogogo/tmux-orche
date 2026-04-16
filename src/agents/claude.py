@@ -6,7 +6,7 @@ import json
 import re
 import shlex
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from pathlib import Path
 
 if __package__ and "." in __package__:

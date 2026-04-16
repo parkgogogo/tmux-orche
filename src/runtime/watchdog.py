@@ -11,13 +11,14 @@ from typing import Any, Callable, Dict
 
 from agents.common import orche_bootstrap_command
 from session.config import _read_notify_binding
-from session.meta import load_meta, log_event
 from session.ops import touch_session_event
 from session.pane import (
     observable_progress_detected,
     recent_capture_excerpt,
     sample_watchdog_state,
 )
+from session.store import load_meta, log_event
+from session.types import SessionMeta, as_turn_record, as_watchdog_state
 from text_utils import extract_summary_candidate, shorten, turn_delta
 from tmux.client import process_is_alive
 
@@ -275,26 +276,18 @@ def run_session_watchdog(
         [str, tuple[str, str], Mapping[str, Any]], bool
     ] = observable_progress_detected,
     update_watchdog_metadata_fn: Callable[
-        ..., Dict[str, Any]
+        ..., Mapping[str, object]
     ] = update_watchdog_metadata,
     release_turn_notification_fn: Callable[..., None] = release_turn_notification,
     emit_internal_notify_fn: Callable[..., bool] = emit_internal_notify,
-    load_meta_fn: Callable[[str], Dict[str, Any]] = load_meta,
+    load_meta_fn: Callable[[str], SessionMeta] = load_meta,
 ) -> str:
     while True:
         meta = load_meta_fn(session)
-        pending_turn = (
-            meta.get("pending_turn")
-            if isinstance(meta.get("pending_turn"), dict)
-            else None
-        )
+        pending_turn = as_turn_record(meta.get("pending_turn"))
         if not pending_turn or str(pending_turn.get("turn_id") or "") != turn_id:
             return "completed"
-        watchdog: Dict[str, Any] = (
-            pending_turn.get("watchdog")
-            if isinstance(pending_turn.get("watchdog"), dict)
-            else {}
-        )
+        watchdog = as_watchdog_state(pending_turn.get("watchdog"))
         if bool(watchdog.get("stop_requested")):
             update_watchdog_metadata_fn(
                 session,

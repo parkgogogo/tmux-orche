@@ -36,18 +36,23 @@ from runtime.watchdog import (
 )
 from session import (
     _read_notify_binding,
+    apply_session_open_state,
+    begin_pending_turn,
     build_notify_binding,
+    clear_legacy_notify_state,
     load_meta,
-    session_last_event_at,
     managed_session_ttl_seconds,
     remove_meta,
     save_meta,
     session_children,
+    session_last_event_at,
     session_metadata_is_live,
     session_parent,
+    set_notify_binding,
     touch_session_event,
     update_runtime_config,
 )
+from session.types import SessionMeta, as_startup_state
 from text_utils import (
     _is_prompt_fragment,
     extract_summary_candidate,
@@ -89,7 +94,7 @@ def _resolve_runtime(
     plugin,
     session: str,
     cwd: Path,
-    existing_meta: Dict[str, Any],
+    existing_meta: SessionMeta,
     discord_channel_id: str,
 ) -> Tuple[AgentRuntime, str, bool]:
     existing_runtime_home = runtime_home_from_meta(existing_meta)
@@ -126,7 +131,7 @@ def _parent_session_from_notify(
 
 def _load_session_context(
     session: str,
-) -> Tuple[Path, str, Dict[str, Any], Dict[str, str]]:
+) -> Tuple[Path, str, SessionMeta, Dict[str, str]]:
     existing_meta = load_meta(session)
     if not existing_meta:
         raise OrcheError(f"Unknown session: {session}")
@@ -208,7 +213,7 @@ def _start_or_restore_session(
     cwd: Path,
     agent: str,
     plugin,
-    existing_meta: Dict[str, Any],
+    existing_meta: SessionMeta,
     notify_binding: Dict[str, str],
     runtime: AgentRuntime,
     resolved_runtime_home: str,
@@ -231,40 +236,29 @@ def _start_or_restore_session(
         tmux_host_session=tmux_host_session,
     )
     meta = load_meta(session)
-    meta.update(
-        {
-            "backend": BACKEND,
-            "session": session,
-            "cwd": str(cwd),
-            "agent": agent,
-            "pane_id": pane_id,
-            "tmux_mode": tmux_mode,
-            "host_pane_id": host_pane_id,
-            "tmux_host_session": tmux_host_session,
-            "last_seen_at": time.time(),
-            "parent_session": parent_session,
-            "last_event_at": time.time(),
-            "last_event_source": "open",
-            "expires_after_seconds": managed_session_ttl_seconds(),
-        }
+    apply_session_open_state(
+        meta,
+        session=session,
+        cwd=str(cwd),
+        agent=agent,
+        pane_id=pane_id,
+        tmux_mode=tmux_mode,
+        host_pane_id=host_pane_id,
+        tmux_host_session=tmux_host_session,
+        parent_session=parent_session,
+        expires_after_seconds=managed_session_ttl_seconds(),
+        backend=BACKEND,
+        timestamp=time.time(),
     )
     apply_runtime_to_meta(meta, agent=agent, runtime=runtime)
-    for key in (
-        "discord_channel_id",
-        "discord_session",
-        "notify_routes",
-    ):
-        meta.pop(key, None)
-    if notify_binding:
-        meta["notify_binding"] = notify_binding
+    clear_legacy_notify_state(meta)
+    set_notify_binding(meta, notify_binding)
     save_meta(session, meta)
     wait_for_startup = False
     if plugin.name in {"claude", "codex"} and runtime.managed:
         session_meta = load_meta(session)
         raw_startup = session_meta.get("startup")
-        startup: Dict[str, Any] = (
-            dict(raw_startup) if isinstance(raw_startup, dict) else {}
-        )
+        startup = as_startup_state(raw_startup)
         if is_agent_running(plugin, pane_id):
             wait_for_startup = _managed_startup_reuse_wait_policy(
                 session, plugin, pane_id, startup
@@ -359,35 +353,26 @@ def send_prompt_to_pane(
         raise OrcheError("pane_id is required")
     meta = load_meta(session)
     wait_for_ack = plugin.name == "claude" and runtime_home_managed_from_meta(meta)
-    meta["pending_turn"] = {
-        "turn_id": uuid.uuid4().hex[:12],
-        "prompt": prompt,
-        "before_capture": read_pane(resolved_pane_id, DEFAULT_CAPTURE_LINES),
-        "submitted_at": time.time(),
-        "pane_id": resolved_pane_id,
-        "notifications": {},
-        "prompt_ack": {"state": "pending", "accepted_at": 0.0, "source": ""},
-        "watchdog": {
-            "state": "queued",
-            "started_at": 0.0,
-            "last_progress_at": time.time(),
-            "last_sample_at": 0.0,
-            "idle_samples": 0,
-            "stop_requested": False,
-        },
-    }
+    submitted_at = time.time()
+    pending_turn = begin_pending_turn(
+        meta,
+        prompt=prompt,
+        pane_id=resolved_pane_id,
+        before_capture=read_pane(resolved_pane_id, DEFAULT_CAPTURE_LINES),
+        submitted_at=submitted_at,
+    )
     save_meta(session, meta)
     touch_session_event(session, source="prompt-submit")
     plugin.submit_prompt(session, prompt, bridge=_pane_bridge_adapter(resolved_pane_id))
     with contextlib.suppress(Exception):
-        start_session_watchdog(session, turn_id=str(meta["pending_turn"]["turn_id"]))
+        start_session_watchdog(session, turn_id=str(pending_turn.get("turn_id") or ""))
     append_action_history(
         session, cwd, agent, "prompt", prompt=prompt, pane_id=resolved_pane_id
     )
     if wait_for_ack:
         wait_for_prompt_ack(
             session,
-            turn_id=str(meta["pending_turn"]["turn_id"]),
+            turn_id=str(pending_turn.get("turn_id") or ""),
             prompt=prompt,
             timeout=CLAUDE_PROMPT_ACK_TIMEOUT,
         )
@@ -522,9 +507,9 @@ def build_status(session: str) -> Dict[str, Any]:
 
 def resolve_session_context(
     *, session: str, require_existing: bool = False, require_cwd_agent: bool = False
-) -> Tuple[Optional[Path], Optional[str], Dict[str, Any]]:
+) -> Tuple[Optional[Path], Optional[str], SessionMeta]:
     meta = load_meta(session)
-    cwd = Path(meta["cwd"]).resolve() if meta.get("cwd") else None
+    cwd = Path(str(meta.get("cwd") or "")).resolve() if meta.get("cwd") else None
     agent = str(meta.get("agent")) if meta.get("agent") else None
     if require_existing and not meta:
         raise OrcheError(f"Unknown session: {session}")

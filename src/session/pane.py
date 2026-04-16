@@ -14,7 +14,7 @@ from tmux.query import (
     read_pane,
 )
 
-from .meta import load_meta
+from .store import load_meta
 
 WATCHDOG_ACTIVE_CPU_THRESHOLD = 5.0
 WATCHDOG_CAPTURE_LINES = DEFAULT_CAPTURE_LINES

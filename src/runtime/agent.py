@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
@@ -16,7 +17,6 @@ from agents.claude import (
 from agents.codex import DEFAULT_CODEX_SOURCE_HOME, CodexAgent
 from agents.common import (
     DEFAULT_RUNTIME_HOME_ROOT,
-    ensure_orche_shim,
     normalize_runtime_home,
     remove_runtime_home,
 )
@@ -24,15 +24,6 @@ from runtime.turn import mark_session_startup_ready, mark_session_startup_timeou
 from session.config import (
     load_config,
     max_inline_sessions,
-)
-from session.meta import (
-    _iter_meta_payloads,
-    append_history_entry,
-    inline_host_lock,
-    load_meta,
-    save_meta,
-    session_lock,
-    target_session_io_lock,
 )
 from session.ops import (
     _current_tmux_value,
@@ -42,6 +33,22 @@ from session.ops import (
     touch_session_event,
 )
 from session.pane import observable_progress_detected, sample_pane_state
+from session.session_state import (
+    apply_agent_launch_state,
+    apply_runtime_state,
+    apply_session_pane_state,
+    set_inline_slot,
+)
+from session.store import (
+    _iter_meta_payloads,
+    append_history_entry,
+    inline_host_lock,
+    load_meta,
+    save_meta,
+    session_lock,
+    target_session_io_lock,
+)
+from session.types import SessionMeta
 from text_utils import window_name
 from tmux.bridge import bridge_keys, bridge_name_pane, bridge_resolve, bridge_type
 from tmux.client import process_descendants, tmux
@@ -164,34 +171,32 @@ def deliver_notify_to_pane(pane_id: str, prompt: str) -> str:
     return resolved_pane_id
 
 
-def runtime_home_from_meta(meta: Dict[str, Any]) -> str:
+def runtime_home_from_meta(meta: SessionMeta) -> str:
     return normalize_runtime_home(
         meta.get("runtime_home") or meta.get("codex_home") or ""
     )
 
 
-def runtime_home_managed_from_meta(meta: Dict[str, Any]) -> bool:
+def runtime_home_managed_from_meta(meta: SessionMeta) -> bool:
     if "runtime_home_managed" in meta:
         return bool(meta.get("runtime_home_managed"))
     return bool(meta.get("codex_home_managed"))
 
 
-def runtime_label_from_meta(meta: Dict[str, Any], plugin: AgentPlugin) -> str:
+def runtime_label_from_meta(meta: SessionMeta, plugin: AgentPlugin) -> str:
     return str(meta.get("runtime_label") or plugin.runtime_label)
 
 
 def apply_runtime_to_meta(
-    meta: Dict[str, Any], *, agent: str, runtime: AgentRuntime
+    meta: SessionMeta, *, agent: str, runtime: AgentRuntime
 ) -> None:
-    meta["runtime_home"] = normalize_runtime_home(runtime.home)
-    meta["runtime_home_managed"] = bool(runtime.managed)
-    meta["runtime_label"] = runtime.label
-    if agent == "codex":
-        meta["codex_home"] = meta["runtime_home"]
-        meta["codex_home_managed"] = meta["runtime_home_managed"]
-    else:
-        meta["codex_home"] = ""
-        meta["codex_home_managed"] = False
+    apply_runtime_state(
+        meta,
+        agent=agent,
+        runtime_home=str(runtime.home),
+        runtime_home_managed=bool(runtime.managed),
+        runtime_label=runtime.label,
+    )
 
 
 def _pane_record_from_tmux_output(output: str) -> Dict[str, str]:
@@ -345,7 +350,7 @@ def _normalize_inline_group_slots(
         if session_name and _inline_slot_value(payload.get("inline_slot")) != index:
             meta = load_meta(session_name)
             if meta:
-                meta["inline_slot"] = index
+                set_inline_slot(meta, index)
                 save_meta(session_name, meta)
     return normalized
 
@@ -598,24 +603,26 @@ def ensure_pane(
             info = get_pane_info(pane_id)
             if info is not None:
                 pane_id = normalize_pane(session, cwd, info)
-                meta.update(
-                    {
-                        "backend": BACKEND,
-                        "session": session,
-                        "cwd": str(cwd),
-                        "agent": agent,
-                        "tmux_session": info["session_name"],
-                        "pane_id": pane_id,
-                        "window_id": info["window_id"],
-                        "window_name": info["window_name"],
-                        "tmux_mode": resolved_tmux_mode,
-                        "host_pane_id": resolved_host_pane_id,
-                        "tmux_host_session": resolved_tmux_host_session,
-                        "last_seen_at": time.time(),
-                    }
+                apply_session_pane_state(
+                    meta,
+                    session=session,
+                    cwd=str(cwd),
+                    agent=agent,
+                    tmux_session=info["session_name"],
+                    pane_id=pane_id,
+                    window_id=info["window_id"],
+                    window_name=info["window_name"],
+                    tmux_mode=resolved_tmux_mode,
+                    host_pane_id=resolved_host_pane_id,
+                    tmux_host_session=resolved_tmux_host_session,
+                    last_seen_at=time.time(),
+                    backend=BACKEND,
+                    inline_slot=(
+                        _inline_slot_value(meta.get("inline_slot"))
+                        if resolved_tmux_mode == "inline-pane"
+                        else None
+                    ),
                 )
-                if resolved_tmux_mode != "inline-pane":
-                    meta.pop("inline_slot", None)
                 save_meta(session, meta)
                 return pane_id
         if resolved_tmux_mode == "inline-pane":
@@ -637,48 +644,44 @@ def ensure_pane(
                     host_pane_id=inline_host_pane_id,
                 )
                 pane_id = normalize_pane(session, cwd, pane)
-                meta.update(
-                    {
-                        "backend": BACKEND,
-                        "session": session,
-                        "cwd": str(cwd),
-                        "agent": agent,
-                        "tmux_session": pane["session_name"],
-                        "pane_id": pane_id,
-                        "window_id": pane["window_id"],
-                        "window_name": pane["window_name"],
-                        "tmux_mode": resolved_tmux_mode,
-                        "host_pane_id": resolved_host_pane_id,
-                        "tmux_host_session": resolved_tmux_host_session
-                        or pane["session_name"],
-                        "last_seen_at": time.time(),
-                    }
+                inline_slot = _inline_slot_value(pane.get("inline_slot"))
+                apply_session_pane_state(
+                    meta,
+                    session=session,
+                    cwd=str(cwd),
+                    agent=agent,
+                    tmux_session=pane["session_name"],
+                    pane_id=pane_id,
+                    window_id=pane["window_id"],
+                    window_name=pane["window_name"],
+                    tmux_mode=resolved_tmux_mode,
+                    host_pane_id=resolved_host_pane_id,
+                    tmux_host_session=resolved_tmux_host_session
+                    or pane["session_name"],
+                    last_seen_at=time.time(),
+                    backend=BACKEND,
+                    inline_slot=inline_slot,
                 )
-                inline_slot = str(pane.get("inline_slot") or "").strip()
-                if inline_slot:
-                    meta["inline_slot"] = int(inline_slot)
                 save_meta(session, meta)
                 return pane_id
         pane = create_dedicated_pane(session, cwd)
         pane_id = normalize_pane(session, cwd, pane)
-        meta.update(
-            {
-                "backend": BACKEND,
-                "session": session,
-                "cwd": str(cwd),
-                "agent": agent,
-                "tmux_session": pane["session_name"],
-                "pane_id": pane_id,
-                "window_id": pane["window_id"],
-                "window_name": pane["window_name"],
-                "tmux_mode": resolved_tmux_mode,
-                "host_pane_id": resolved_host_pane_id,
-                "tmux_host_session": resolved_tmux_host_session or pane["session_name"],
-                "last_seen_at": time.time(),
-            }
+        apply_session_pane_state(
+            meta,
+            session=session,
+            cwd=str(cwd),
+            agent=agent,
+            tmux_session=pane["session_name"],
+            pane_id=pane_id,
+            window_id=pane["window_id"],
+            window_name=pane["window_name"],
+            tmux_mode=resolved_tmux_mode,
+            host_pane_id=resolved_host_pane_id,
+            tmux_host_session=resolved_tmux_host_session or pane["session_name"],
+            last_seen_at=time.time(),
+            backend=BACKEND,
+            inline_slot=None,
         )
-        if resolved_tmux_mode != "inline-pane":
-            meta.pop("inline_slot", None)
         save_meta(session, meta)
         return pane_id
 
@@ -890,15 +893,15 @@ def ensure_agent_running(
     pane_id = wait_for_agent_process_start(plugin, pane_id)
     bridge_name_pane(pane_id, session)
     meta = load_meta(session)
-    meta.update(
-        {
-            "backend": BACKEND,
-            "session": session,
-            "cwd": str(cwd),
-            "pane_id": pane_id,
-            "agent_started_at": time.time(),
-            "last_seen_at": time.time(),
-        }
+    launched_at = time.time()
+    apply_agent_launch_state(
+        meta,
+        session=session,
+        cwd=str(cwd),
+        pane_id=pane_id,
+        agent_started_at=launched_at,
+        last_seen_at=launched_at,
+        backend=BACKEND,
     )
     apply_runtime_to_meta(
         meta,

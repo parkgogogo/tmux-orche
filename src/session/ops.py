@@ -5,20 +5,22 @@ import time
 from collections.abc import Mapping
 from typing import Any, Dict, List, Optional
 
+from text_utils import session_key
 from tmux.bridge import bridge_resolve
 from tmux.client import tmux
 from tmux.query import TMUX_SESSION, _tmux_has_session, get_pane_info, pane_exists
 
 from .config import managed_session_ttl_seconds
-from .meta import (
+from .session_state import touch_session_meta
+from .store import (
     _iter_meta_payloads,
     load_meta,
     log_exception,
     remove_meta,
     save_meta,
-    session_key,
     session_lock,
 )
+from .types import SessionMeta
 
 
 def tmux_session_name(session: str) -> str:
@@ -53,14 +55,17 @@ def touch_session_event(session: str, *, source: str = "") -> Dict[str, Any]:
         if not meta:
             return {}
         timestamp = time.time()
-        meta["last_event_at"] = timestamp
-        meta["last_event_source"] = str(source or "").strip()
-        meta["expires_after_seconds"] = managed_session_ttl_seconds()
+        touch_session_meta(
+            meta,
+            timestamp=timestamp,
+            source=source,
+            expires_after_seconds=managed_session_ttl_seconds(),
+        )
         save_meta(session_name, meta)
         return {
             "last_event_at": timestamp,
-            "last_event_source": meta["last_event_source"],
-            "expires_after_seconds": meta["expires_after_seconds"],
+            "last_event_source": str(meta.get("last_event_source") or ""),
+            "expires_after_seconds": int(meta.get("expires_after_seconds") or 0),
         }
 
 
@@ -114,10 +119,10 @@ def _session_expires_at(meta: Mapping[str, Any]) -> float:
     return 0.0 if ttl <= 0 or last_event_at <= 0 else last_event_at + ttl
 
 
-def list_sessions(*, expire_fn=None) -> List[Dict[str, Any]]:
+def list_sessions(*, expire_fn=None) -> List[SessionMeta]:
     if expire_fn is not None:
         expire_fn()
-    sessions: List[Dict[str, Any]] = []
+    sessions: List[SessionMeta] = []
     for payload in _iter_meta_payloads():
         session = str(payload.get("session") or "").strip()
         if not session_metadata_is_live(session, payload):

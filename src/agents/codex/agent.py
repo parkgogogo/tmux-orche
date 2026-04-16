@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shlex
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from pathlib import Path
 
 from ..base import AgentConfig, AgentPlugin, AgentRuntime, BridgeIO

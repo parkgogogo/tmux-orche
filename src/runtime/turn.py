@@ -7,9 +7,24 @@ import time
 from collections.abc import Mapping
 from typing import Any, Dict, Tuple
 
-from session.meta import load_meta, save_meta, session_lock
 from session.ops import touch_session_event
-from text_utils import shorten
+from session.session_state import (
+    initialize_startup_state,
+    mark_startup_blocked_if_launching,
+    mark_startup_ready,
+    mark_startup_timeout,
+)
+from session.store import load_meta, save_meta, session_lock
+from session.turn_state import (
+    claim_turn_notification_in_meta,
+    complete_pending_turn_state,
+    release_turn_notification_in_meta,
+    update_pending_turn_watchdog,
+)
+from session.turn_state import (
+    mark_pending_turn_prompt_accepted as mark_pending_turn_prompt_accepted_in_meta,
+)
+from session.types import TurnRecord, WatchdogState, as_prompt_ack_state, as_turn_record
 from tmux.client import process_is_alive
 
 CLAUDE_PROMPT_ACK_POLL_INTERVAL = 0.1
@@ -26,33 +41,27 @@ def _turn_matches(
 
 
 def _current_turn_entry(
-    meta: Mapping[str, Any],
+    meta: Mapping[str, object],
     turn_id: str = "",
     *,
     prompt: str = "",
     allow_fallback: bool = True,
-) -> Tuple[str, Dict[str, Any]]:
-    pending_turn = (
-        meta.get("pending_turn") if isinstance(meta.get("pending_turn"), dict) else None
-    )
-    last_completed_turn = (
-        meta.get("last_completed_turn")
-        if isinstance(meta.get("last_completed_turn"), dict)
-        else None
-    )
+) -> Tuple[str, TurnRecord]:
+    pending_turn = as_turn_record(meta.get("pending_turn"))
+    last_completed_turn = as_turn_record(meta.get("last_completed_turn"))
     if turn_id or prompt:
         if pending_turn and _turn_matches(pending_turn, turn_id=turn_id, prompt=prompt):
-            return "pending_turn", dict(pending_turn)
+            return "pending_turn", as_turn_record(pending_turn)
         if last_completed_turn and _turn_matches(
             last_completed_turn, turn_id=turn_id, prompt=prompt
         ):
-            return "last_completed_turn", dict(last_completed_turn)
+            return "last_completed_turn", as_turn_record(last_completed_turn)
         if not allow_fallback:
             return "", {}
     if pending_turn:
-        return "pending_turn", dict(pending_turn)
+        return "pending_turn", as_turn_record(pending_turn)
     if last_completed_turn:
-        return "last_completed_turn", dict(last_completed_turn)
+        return "last_completed_turn", as_turn_record(last_completed_turn)
     return "", {}
 
 
@@ -62,17 +71,7 @@ def initialize_session_startup(
     timestamp = started_at if started_at is not None else time.time()
     with session_lock(session):
         meta = load_meta(session)
-        startup = {
-            "state": state,
-            "started_at": timestamp,
-            "ready_at": 0.0,
-            "ready_source": "",
-            "blocked_at": 0.0,
-            "blocked_reason": "",
-            "blocked_event": "",
-            "updated_at": timestamp,
-        }
-        meta["startup"] = startup
+        startup = initialize_startup_state(meta, state=state, timestamp=timestamp)
         save_meta(session, meta)
     touch_session_event(session, source=f"startup:{state}")
     return dict(startup)
@@ -82,21 +81,7 @@ def mark_session_startup_ready(session: str, *, source: str) -> Dict[str, Any]:
     timestamp = time.time()
     with session_lock(session):
         meta = load_meta(session)
-        startup = dict(meta.get("startup") or {})
-        startup.update(
-            {
-                "state": "ready",
-                "ready_at": float(startup.get("ready_at") or timestamp),
-                "ready_source": str(source or "").strip(),
-                "blocked_at": 0.0,
-                "blocked_reason": "",
-                "blocked_event": "",
-                "updated_at": timestamp,
-            }
-        )
-        if not startup.get("started_at"):
-            startup["started_at"] = timestamp
-        meta["startup"] = startup
+        startup = mark_startup_ready(meta, source=source, timestamp=timestamp)
         save_meta(session, meta)
     touch_session_event(session, source=f"startup:ready:{source}")
     return dict(startup)
@@ -106,19 +91,7 @@ def mark_session_startup_timeout(session: str, *, reason: str = "") -> Dict[str,
     timestamp = time.time()
     with session_lock(session):
         meta = load_meta(session)
-        startup = dict(meta.get("startup") or {})
-        startup.update(
-            {
-                "state": "timeout",
-                "blocked_reason": str(
-                    reason or startup.get("blocked_reason") or ""
-                ).strip(),
-                "updated_at": timestamp,
-            }
-        )
-        if not startup.get("started_at"):
-            startup["started_at"] = timestamp
-        meta["startup"] = startup
+        startup = mark_startup_timeout(meta, reason=reason, timestamp=timestamp)
         save_meta(session, meta)
     touch_session_event(session, source="startup:timeout")
     return dict(startup)
@@ -128,31 +101,15 @@ def mark_session_startup_blocked(
     session: str, *, reason: str, event_name: str
 ) -> Tuple[Dict[str, Any], bool]:
     timestamp = time.time()
+    blocked_event = str(event_name or "").strip()
     with session_lock(session):
         meta = load_meta(session)
-        startup = dict(meta.get("startup") or {})
-        state = str(startup.get("state") or "").strip().lower()
-        if state != "launching":
-            return startup, False
-        blocked_reason = str(reason or "").strip()
-        blocked_event = str(event_name or "").strip()
-        changed = (
-            str(startup.get("blocked_reason") or "") != blocked_reason
-            or str(startup.get("blocked_event") or "") != blocked_event
-            or state != "blocked"
+        startup, changed = mark_startup_blocked_if_launching(
+            meta,
+            reason=reason,
+            event_name=blocked_event,
+            timestamp=timestamp,
         )
-        startup.update(
-            {
-                "state": "blocked",
-                "blocked_at": timestamp,
-                "blocked_reason": blocked_reason,
-                "blocked_event": blocked_event,
-                "updated_at": timestamp,
-            }
-        )
-        if not startup.get("started_at"):
-            startup["started_at"] = timestamp
-        meta["startup"] = startup
         save_meta(session, meta)
     touch_session_event(session, source=f"startup:blocked:{blocked_event or 'unknown'}")
     return dict(startup), changed
@@ -164,23 +121,11 @@ def mark_pending_turn_prompt_accepted(
     timestamp = time.time()
     with session_lock(session):
         meta = load_meta(session)
-        pending_turn = (
-            meta.get("pending_turn")
-            if isinstance(meta.get("pending_turn"), dict)
-            else None
+        prompt_ack = mark_pending_turn_prompt_accepted_in_meta(
+            meta, source=source, timestamp=timestamp
         )
-        if not pending_turn:
+        if not prompt_ack:
             return {}
-        prompt_ack = dict(pending_turn.get("prompt_ack") or {})
-        prompt_ack.update(
-            {
-                "state": "accepted",
-                "accepted_at": timestamp,
-                "source": str(source or "").strip(),
-            }
-        )
-        pending_turn["prompt_ack"] = prompt_ack
-        meta["pending_turn"] = pending_turn
         save_meta(session, meta)
     touch_session_event(session, source=f"prompt-ack:{source}")
     return dict(prompt_ack)
@@ -199,10 +144,7 @@ def wait_for_prompt_ack(
         _turn_key, turn = _current_turn_entry(
             meta, turn_id=turn_id, prompt=prompt, allow_fallback=False
         )
-        raw_prompt_ack = turn.get("prompt_ack")
-        prompt_ack: Dict[str, Any] = (
-            dict(raw_prompt_ack) if isinstance(raw_prompt_ack, dict) else {}
-        )
+        prompt_ack = as_prompt_ack_state(turn.get("prompt_ack"))
         if str(prompt_ack.get("state") or "").strip().lower() == "accepted":
             return dict(prompt_ack)
         time.sleep(CLAUDE_PROMPT_ACK_POLL_INTERVAL)
@@ -235,20 +177,18 @@ def claim_turn_notification(
         )
         if not turn_key or not turn:
             return True
-        raw_notifications = turn.get("notifications")
-        notifications: Dict[str, Any] = (
-            dict(raw_notifications) if isinstance(raw_notifications, dict) else {}
+        claimed = claim_turn_notification_in_meta(
+            meta,
+            turn_key=turn_key,
+            turn=turn,
+            notification_key=normalized_event,
+            timestamp=time.time(),
+            source=source,
+            status=status,
+            summary=summary,
         )
-        if normalized_event in notifications:
+        if not claimed:
             return False
-        notifications[normalized_event] = {
-            "at": time.time(),
-            "source": str(source or "").strip(),
-            "status": str(status or "").strip(),
-            "summary": shorten(summary, 400),
-        }
-        turn["notifications"] = notifications
-        meta[turn_key] = turn
         save_meta(session, meta)
     touch_session_event(session, source=f"notify-claim:{normalized_event}")
     return True
@@ -275,39 +215,29 @@ def release_turn_notification(
         )
         if not turn_key or not turn:
             return
-        notifications = turn.get("notifications")
-        if not isinstance(notifications, dict) or normalized_event not in notifications:
+        released = release_turn_notification_in_meta(
+            meta,
+            turn_key=turn_key,
+            turn=turn,
+            notification_key=normalized_event,
+        )
+        if not released:
             return
-        notifications.pop(normalized_event, None)
-        turn["notifications"] = notifications
-        meta[turn_key] = turn
         save_meta(session, meta)
     touch_session_event(session, source=f"notify-release:{normalized_event}")
 
 
 def update_watchdog_metadata(
     session: str, *, turn_id: str, values: Mapping[str, Any]
-) -> Dict[str, Any]:
+) -> WatchdogState:
     with session_lock(session):
         meta = load_meta(session)
-        pending_turn = (
-            meta.get("pending_turn")
-            if isinstance(meta.get("pending_turn"), dict)
-            else None
-        )
-        if not pending_turn or str(pending_turn.get("turn_id") or "") != turn_id:
+        watchdog = update_pending_turn_watchdog(meta, turn_id=turn_id, values=values)
+        if not watchdog:
             return {}
-        watchdog = (
-            pending_turn.get("watchdog")
-            if isinstance(pending_turn.get("watchdog"), dict)
-            else {}
-        )
-        watchdog.update(values)
-        pending_turn["watchdog"] = watchdog
-        meta["pending_turn"] = pending_turn
         save_meta(session, meta)
     touch_session_event(session, source="watchdog")
-    return dict(watchdog)
+    return watchdog
 
 
 def complete_pending_turn(
@@ -321,41 +251,18 @@ def complete_pending_turn(
     finished_at = completed_at if completed_at is not None else time.time()
     with session_lock(session):
         meta = load_meta(session)
-        pending_turn = (
-            meta.get("pending_turn")
-            if isinstance(meta.get("pending_turn"), dict)
-            else None
+        completed, pid = complete_pending_turn_state(
+            meta,
+            summary=summary,
+            turn_id=turn_id,
+            prompt=prompt,
+            completed_at=finished_at,
         )
-        if not pending_turn:
+        if not completed:
             return {}
-        pending_turn_id = str(pending_turn.get("turn_id") or "")
-        pending_prompt = str(pending_turn.get("prompt") or "")
-        if (
-            turn_id
-            and pending_turn_id
-            and pending_turn_id != str(turn_id)
-            and (not prompt or pending_prompt != str(prompt))
-        ):
-            return {}
-        watchdog = (
-            pending_turn.get("watchdog")
-            if isinstance(pending_turn.get("watchdog"), dict)
-            else {}
-        )
-        pid = (
-            int(watchdog.get("pid") or 0)
-            if str(watchdog.get("pid") or "").isdigit()
-            else 0
-        )
-        completed = dict(pending_turn)
-        if summary:
-            completed["summary"] = summary
-        completed["completed_at"] = finished_at
-        meta["last_completed_turn"] = completed
-        meta.pop("pending_turn", None)
         save_meta(session, meta)
     touch_session_event(session, source="turn-complete")
     if pid > 0 and process_is_alive(pid):
         with contextlib.suppress(OSError):
             os.kill(pid, signal.SIGTERM)
-    return completed
+    return dict(completed)

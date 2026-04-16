@@ -61,17 +61,17 @@ from session.config import (
     reset_config_value,
     set_config_value,
 )
-from session.meta import load_history_entries, log_event, log_exception
 from session.ops import (
     attach_session,
     expire_sessions,
     list_sessions,
     session_exists,
 )
+from session.store import load_history_entries, log_event, log_exception
 from text_utils import default_session_name
 from tls import configure_tls_runtime
-from tmux.bridge import bridge_keys, bridge_read, bridge_type
 from tmux import current_pane_id, pane_exists
+from tmux.bridge import bridge_keys, bridge_read, bridge_type
 from version import __version__
 
 

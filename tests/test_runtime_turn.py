@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from runtime import turn as turn_module
-from session.meta import load_meta, save_meta
+from session.store import load_meta, save_meta
 
 pytestmark = pytest.mark.unit
 

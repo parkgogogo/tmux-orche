@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from runtime.agent import deliver_notify_to_session
+from runtime.agent import deliver_notify_to_pane, deliver_notify_to_session
 
 from .base import Notifier
 from .config import NotifyConfig
@@ -15,16 +15,20 @@ class TmuxBridgeNotifier(Notifier):
         self.config = config
 
     def send(self, event: NotifyEvent, route: ResolvedRoute) -> DeliveryResult:
-        target_session = route.target.strip()
-        if not target_session:
+        target = route.target.strip()
+        if not target:
             raise NotifyConfigError("tmux-bridge target session is required")
         prompt = self._render_prompt(event)
         try:
-            deliver_notify_to_session(target_session, prompt)
+            pane_prefix = "pane:"
+            if target.startswith(pane_prefix):
+                deliver_notify_to_pane(target[len(pane_prefix) :].strip(), prompt)
+            else:
+                deliver_notify_to_session(target, prompt)
         except Exception as exc:
             raise NotifyDeliveryError(f"tmux-bridge delivery failed: {exc}") from exc
         return DeliveryResult(
-            provider=self.name, ok=True, detail="delivered", target=target_session
+            provider=self.name, ok=True, detail="delivered", target=target
         )
 
     def _render_prompt(self, event: NotifyEvent) -> str:

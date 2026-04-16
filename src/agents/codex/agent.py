@@ -196,9 +196,7 @@ class CodexAgent(AgentPlugin):
         runtime: AgentRuntime,
         session: str,
         discord_channel_id: str | None,
-        approve_all: bool,
     ) -> str:
-        _ = approve_all
         prefix = [f"cd {shlex.quote(str(cwd))}"]
         orche_shim = ensure_orche_shim()
         prefix.append(f"export ORCHE_BIN={shlex.quote(str(orche_shim))}")
@@ -226,18 +224,6 @@ class CodexAgent(AgentPlugin):
         ]
         prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
         return " && ".join(prefix)
-
-    def native_launch_args(self, *, cwd: Path, cli_args: Sequence[str]) -> list[str]:
-        args = [str(value) for value in cli_args]
-        command: list[str] = []
-        if "--no-alt-screen" not in args:
-            command.append("--no-alt-screen")
-        if "-C" not in args:
-            command.extend(["-C", str(cwd)])
-        if "--dangerously-bypass-approvals-and-sandbox" not in args:
-            command.append("--dangerously-bypass-approvals-and-sandbox")
-        command.extend(args)
-        return command
 
     def matches_process(
         self, pane_command: str, descendant_commands: Iterable[str]

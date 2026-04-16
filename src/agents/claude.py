@@ -426,9 +426,7 @@ class ClaudeAgent(AgentPlugin):
         runtime: AgentRuntime,
         session: str,
         discord_channel_id: str | None,
-        approve_all: bool,
     ) -> str:
-        _ = approve_all
         prefix = [f"cd {shlex.quote(str(cwd))}"]
         orche_shim = ensure_orche_shim()
         prefix.append(f"export ORCHE_BIN={shlex.quote(str(orche_shim))}")
@@ -453,13 +451,6 @@ class ClaudeAgent(AgentPlugin):
         ]
         prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
         return " && ".join(prefix)
-
-    def native_launch_args(self, *, cwd: Path, cli_args: Sequence[str]) -> list[str]:
-        _ = cwd
-        args = [str(value) for value in cli_args]
-        if "--dangerously-skip-permissions" in args:
-            return args
-        return ["--dangerously-skip-permissions", *args]
 
     def command_tokens(self) -> list[str]:
         return claude_command_tokens(self._claude_command)

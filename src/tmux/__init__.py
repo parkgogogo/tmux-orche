@@ -17,6 +17,7 @@ from .query import (
     _tmux_split_fields,
     _tmux_value_for_pane,
     _tmux_window_index_in_use,
+    current_pane_id,
     ensure_tmux_session,
     find_window,
     get_pane_info,

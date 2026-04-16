@@ -64,23 +64,22 @@
 # 1. 安装
 curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | sh
 
-# 2. 获取当前 tmux session（在 tmux 里执行）
-current_session="$(orche whoami)"
-
-# 3. 开 worker，派任务，走人
+# 2. 开 worker，派任务，走人
 orche open \
   --cwd ./my-repo \
   --agent codex \
   --name my-worker \
-  --notify "tmux:${current_session}" \
+  --notify tmux:self \
   --prompt "重构 auth 模块"
 
-# 4. 跑完了结果会自动送回你的 session。
+# 3. 跑完了结果会自动送回你当前的 tmux pane。
 #    中途想看看进度：
 orche status my-worker        # 还活着吗？在跑吗？
 orche read my-worker          # 看看终端输出
 orche attach my-worker        # 直接接管终端
 ```
+
+如果你要显式指定某个 pane，可以用 `--notify tmux:%12`。只有在你明确要回送到另一个命名 `orche` session 时，才用 `tmux:<session>`。
 
 ## 使用场景
 
@@ -245,7 +244,7 @@ curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/o
 orche config set discord.bot-token "$BOT_TOKEN"
 orche config set discord.webhook-url "$WEBHOOK_URL"
 
-# managed session 空闲超时（默认 43200 秒，<=0 不过期）
+# session 空闲超时（默认 43200 秒，<=0 不过期）
 orche config set managed.ttl-seconds 1800
 
 # 自定义 Claude CLI 路径

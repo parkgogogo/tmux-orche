@@ -6,7 +6,7 @@
   Create or reuse a named control endpoint.
 
 - `orche codex` / `orche claude`
-  Open a fresh native session for the current directory and attach immediately.
+  Open a fresh session for the current directory and attach immediately.
 
 - `orche prompt`
   Delegate work into an existing session.
@@ -57,28 +57,19 @@ Notes:
 - `-v` is supported on the root command only
 - leaf commands still use `--help`, for example `orche attach --help`
 
-## Managed vs Native Sessions
+## Sessions
 
-### Managed session
-
-Use managed mode for normal orchestration:
+Use the session model for normal orchestration:
 
 ```bash
 orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
 ```
 
-This is the default recommendation because `orche` can manage session metadata and routing coherently.
-
-### Native session
-
-Use native mode when you need raw agent CLI args:
-
-```bash
-orche open --cwd /repo --agent claude -- --print --help
-```
+`--notify` is optional. Add it when you want automatic routing back to another session or external target.
 
 Rules:
 
-- raw agent args must come after `--`
-- native sessions do not use `--notify`
-- do not mix raw agent args with managed notify routing
+- raw agent CLI args are not supported
+- use `--notify` only when you want result routing
+- use `--notify tmux:self` to route results back to the current tmux pane
+- use `--notify tmux:%12` to route results to a specific live tmux pane

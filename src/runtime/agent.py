@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import shlex
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
@@ -38,7 +36,7 @@ from session.meta import (
 )
 from session.ops import (
     _current_tmux_value,
-    managed_session_last_event_at,
+    session_last_event_at,
     session_metadata_is_live,
     tmux_session_name,
     touch_session_event,
@@ -134,6 +132,36 @@ def deliver_notify_to_session(session: str, prompt: str) -> str:
         target_agent = str(target_meta.get("agent") or "").strip().lower() or "codex"
         get_agent(target_agent).submit_prompt(session, prompt, bridge=_FallbackBridge())
         return pane_id
+
+
+def deliver_notify_to_pane(pane_id: str, prompt: str) -> str:
+    resolved_pane_id = str(pane_id or "").strip()
+    if not resolved_pane_id or not pane_exists(resolved_pane_id):
+        raise RuntimeError(f"notify target pane not found: {resolved_pane_id or '-'}")
+    buffer_name = f"orche-notify-{time.time_ns()}"
+    try:
+        tmux(
+            "load-buffer",
+            "-b",
+            buffer_name,
+            "-",
+            check=True,
+            capture=True,
+            input_text=prompt,
+        )
+        tmux(
+            "paste-buffer",
+            "-t",
+            resolved_pane_id,
+            "-b",
+            buffer_name,
+            check=True,
+            capture=True,
+        )
+    finally:
+        tmux("delete-buffer", "-b", buffer_name, check=False, capture=True)
+    tmux("send-keys", "-t", resolved_pane_id, "Enter", check=True, capture=True)
+    return resolved_pane_id
 
 
 def runtime_home_from_meta(meta: Dict[str, Any]) -> str:
@@ -304,7 +332,7 @@ def _normalize_inline_group_slots(
         slot = _inline_slot_value(payload.get("inline_slot"))
         return (
             DEFAULT_MAX_INLINE_SESSIONS if slot is None else slot,
-            managed_session_last_event_at(payload, default=float("inf")),
+            session_last_event_at(payload, default=float("inf")),
             str(payload.get("session") or ""),
         )
 
@@ -833,7 +861,6 @@ def ensure_agent_running(
     cwd: Path,
     pane_id: str,
     *,
-    approve_all: bool = False,
     runtime: Optional[AgentRuntime] = None,
     discord_channel_id: Optional[str] = None,
 ) -> str:
@@ -844,7 +871,6 @@ def ensure_agent_running(
             f"Pane disappeared before {plugin.display_name} launch: {pane_id}"
         )
     launch_command = plugin.build_launch_command(
-        approve_all=True,
         cwd=cwd,
         runtime=runtime or AgentRuntime(label=plugin.runtime_label),
         session=session,
@@ -871,7 +897,6 @@ def ensure_agent_running(
             "cwd": str(cwd),
             "pane_id": pane_id,
             "agent_started_at": time.time(),
-            "agent_approve_all": True,
             "last_seen_at": time.time(),
         }
     )
@@ -928,87 +953,9 @@ def remove_managed_codex_home(codex_home: str) -> None:
         remove_runtime_home(codex_home)
 
 
-def session_launch_mode(meta: Mapping[str, Any]) -> str:
-    return str(meta.get("launch_mode") or "").strip() or "managed"
-
-
-def native_cli_args_from_meta(meta: Mapping[str, Any]) -> List[str]:
-    raw_args = meta.get("native_cli_args")
-    if not isinstance(raw_args, list):
-        return []
-    return [str(value) for value in raw_args if str(value)]
-
-
-def build_native_agent_launch_command(
-    plugin: AgentPlugin, *, session: str, cwd: Path, cli_args: Sequence[str]
-) -> str:
-    command_tokens = plugin.command_tokens()
-    binary = command_tokens[0]
-    command = [*command_tokens, *plugin.native_launch_args(cwd=cwd, cli_args=cli_args)]
-    prefix = [f"cd {shlex.quote(str(cwd))}"]
-    orche_shim = ensure_orche_shim()
-    prefix.append(f"export ORCHE_BIN={shlex.quote(str(orche_shim))}")
-    prefix.append(f"export PATH={shlex.quote(str(orche_shim.parent))}:$PATH")
-    if session:
-        prefix.append(f"export ORCHE_SESSION={shlex.quote(session)}")
-    launch_error = f"{LAUNCH_ERROR_PREFIX} {plugin.display_name} CLI not found in PATH. Install {binary} or add it to PATH."
-    prefix.append(
-        "if ! command -v "
-        f"{shlex.quote(binary)} >/dev/null 2>&1; "
-        f"then printf '%s\\n' {shlex.quote(launch_error)} >&2; sleep 2; exit 127; fi"
-    )
-    prefix.append(f"exec {' '.join(shlex.quote(part) for part in command)}")
-    return " && ".join(prefix)
-
-
 def extract_launch_error(capture: str) -> str:
     for line in capture.splitlines():
         text = str(line or "").strip()
         if text.startswith(LAUNCH_ERROR_PREFIX):
             return text[len(LAUNCH_ERROR_PREFIX) :].strip()
     return ""
-
-
-def ensure_native_agent_running(
-    plugin: AgentPlugin,
-    session: str,
-    cwd: Path,
-    pane_id: str,
-    *,
-    cli_args: Sequence[str],
-) -> str:
-    if is_agent_running(plugin, pane_id):
-        return pane_id
-    if get_pane_info(pane_id) is None:
-        raise RuntimeError(
-            f"Pane disappeared before {plugin.display_name} launch: {pane_id}"
-        )
-    launch_command = build_native_agent_launch_command(
-        plugin, session=session, cwd=cwd, cli_args=cli_args
-    )
-    tmux(
-        "respawn-pane",
-        "-k",
-        "-t",
-        pane_id,
-        "-c",
-        str(cwd),
-        launch_command,
-        check=True,
-        capture=True,
-    )
-    pane_id = wait_for_agent_process_start(plugin, pane_id)
-    bridge_name_pane(pane_id, session)
-    meta = load_meta(session)
-    meta.update(
-        {
-            "backend": BACKEND,
-            "session": session,
-            "cwd": str(cwd),
-            "pane_id": pane_id,
-            "agent_started_at": time.time(),
-            "last_seen_at": time.time(),
-        }
-    )
-    save_meta(session, meta)
-    return pane_id

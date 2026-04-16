@@ -16,8 +16,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+]
 dev = [
   "basedpyright>=1.39.0",
+  "pytest>=8.0",
   "ruff>=0.15.0",
   "tomli>=2.0",
 ]
@@ -50,3 +54,13 @@ pythonVersion = "3.9"
 typeCheckingMode = "standard"
 reportMissingTypeStubs = false
 reportUnsupportedDunderAll = false
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+  "unit: fast pure-logic regression tests",
+  "integration: cross-module or external integration tests",
+  "tmux: tests that require a real tmux binary/session",
+]

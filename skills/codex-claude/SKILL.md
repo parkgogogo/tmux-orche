@@ -1,6 +1,6 @@
 ---
 name: orche-codex-claude
-description: Use this skill when Codex or Claude is supervising another agent through `orche`, and the worker must report back to the current agent session through an explicit `tmux:<session>` notify route. It enforces `orche whoami`, managed session setup, and a fire-and-forget workflow instead of polling or live babysitting.
+description: Use this skill when Codex or Claude is supervising another agent through `orche`, and the worker must report back through an explicit tmux notify route. Prefer `tmux:self`, use `tmux:%<pane>` as a fallback, and reserve `tmux:<session>` for explicit cross-session routing.
 ---
 
 # orche for Codex and Claude
@@ -8,7 +8,7 @@ description: Use this skill when Codex or Claude is supervising another agent th
 This skill is for one supervisor shape only:
 
 - the current supervisor is Codex or Claude
-- the supervisor itself is working inside an `orche`-managed tmux session
+- the supervisor itself is working inside a live tmux pane
 - the worker must report back to that agent session through tmux
 
 Do not use this skill when OpenClaw is the supervisor and the return path is Discord. That is a different skill.
@@ -16,9 +16,10 @@ Do not use this skill when OpenClaw is the supervisor and the return path is Dis
 ## Non-Negotiable Rules
 
 - Do not run delegated Codex or Claude workers in sandboxed or approval-gated mode. `orche` launches Codex with `--dangerously-bypass-approvals-and-sandbox` and Claude with `--dangerously-skip-permissions`; your workflow should assume the worker is unsandboxed.
-- Treat `notify` as the return path. If the worker must report back, open it with explicit `--notify tmux:<target-session>`.
+- Treat `notify` as the return path. If the worker must report back to the current tmux pane, prefer `--notify tmux:self`.
 - Treat the first task as `open --prompt` and follow-up tasks as `prompt`. After `orche prompt`, do not keep the current turn open just to watch the worker. If you have no independent work left, end the current turn immediately and wait for `notify` to trigger the next turn.
-- Never guess the tmux notify target. Resolve it with `orche whoami` first.
+- Use `tmux:%<pane-id>` only when you need to target a specific live pane explicitly.
+- Use `tmux:<session>` only when you intentionally want to route back to a different named `orche` session.
 - When you open a tmux-routed worker from inside the current supervisor session, prefer the visible inline tmux pane workflow over creating a separate detached tmux session.
 - Use managed sessions for delegated workers. A delegated worker that must report back is not a native session.
 - Create a session once, then reuse it through `prompt`, `status`, `read`, `attach`, `input`, `key`, `cancel`, or `close`. Do not call `open` again with the same explicit session name; that errors instead of reusing it.
@@ -61,43 +62,29 @@ Avoid prompts like:
 - "continue investigating and keep me posted"
 - "do a very deep review and run anything else you think might help" when a bounded review is what you actually want
 
-## Session Awareness First
+## Notify Target First
 
-Before opening a worker or choosing a tmux notify target, determine whether you are already inside an `orche` session.
+Before opening a worker, decide which tmux target should receive the result.
 
-Start with:
+Preferred order:
 
-```bash
-orche whoami
-```
+- if the result should come back to the current supervisor pane, use `tmux:self`
+- if you need to target a specific live pane, use `tmux:%<pane-id>`
+- if you intentionally want to route back to a different named `orche` session, use `tmux:<session>`
 
-Interpretation:
-
-- if it returns a session name, that session is the safest default tmux notify target
-- if it fails, do not invent a tmux target from repo name, cwd, or pane ids
-
-If `whoami` fails but you still need context, inspect known sessions:
-
-```bash
-orche list
-```
-
-If you cannot establish the current supervisor session, do not open a tmux-routed worker yet.
+Only use `orche whoami` when you specifically need the current `orche` session id for inspection or explicit cross-session routing.
 
 ## Default Workflow
 
 Use this sequence unless the user explicitly wants something else:
 
 ```bash
-# 1. resolve the current supervisor session
-current_session="$(orche whoami)"
+# 1. open a managed worker with an explicit tmux return path and first prompt
+orche open --cwd /repo --agent codex --name repo-worker --notify tmux:self --prompt "implement the parser refactor"
 
-# 2. open a managed worker with an explicit tmux return path and first prompt
-orche open --cwd /repo --agent codex --name repo-worker --notify "tmux:${current_session}" --prompt "implement the parser refactor"
+# 2. let orche place the worker in a visible inline pane when possible
 
-# 3. let orche place the worker in a visible inline pane when possible
-
-# 4. end the current turn unless you have unrelated work that does not depend on the worker
+# 3. end the current turn unless you have unrelated work that does not depend on the worker
 ```
 
 Default behavior after the first prompt:
@@ -133,9 +120,9 @@ Notify is mandatory for delegated reviewer/worker loops because it closes the co
 
 Rules:
 
-- use `tmux:<session>` as the notify target
-- prefer the session returned by `orche whoami`
-- do not assume the current supervisor session is called `orche` unless `whoami`, `list`, or the user established that
+- prefer `tmux:self` when the result should return to the current supervisor pane
+- use `tmux:%<pane-id>` as the explicit-pane fallback
+- use `tmux:<session>` only for deliberate cross-session routing
 - rely on notify to resume the conversation; do not keep the current turn open solely to wait for the worker
 - changing the notify target means opening a new session, not mutating the existing one
 - do not combine raw agent CLI args after `--` with `--notify`
@@ -143,8 +130,7 @@ Rules:
 Managed session example:
 
 ```bash
-current_session="$(orche whoami)"
-orche open --cwd /repo --agent codex --name repo-worker --notify "tmux:${current_session}" --prompt "implement the parser refactor"
+orche open --cwd /repo --agent codex --name repo-worker --notify tmux:self --prompt "implement the parser refactor"
 ```
 
 Native sessions are for ad-hoc interactive work and are not the default here:
@@ -196,7 +182,7 @@ orche close repo-worker
 Avoid these:
 
 - launching Codex or Claude workers in sandboxed or approval-gated mode
-- guessing a tmux notify target instead of resolving it with `orche whoami`
+- guessing a tmux pane id or session name instead of choosing an explicit tmux notify target
 - opening a worker without `--notify` when the result must return to the supervisor session
 - polling continuously after `prompt`
 - keeping the current turn open only to watch the worker instead of ending it and waiting for notify

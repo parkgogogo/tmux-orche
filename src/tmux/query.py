@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -52,6 +53,17 @@ def pane_exists(pane_id: str) -> bool:
         "display-message", "-p", "-t", pane_id, "#{pane_id}", check=False, capture=True
     )
     return result.returncode == 0 and result.stdout.strip() == pane_id
+
+
+def current_pane_id() -> str:
+    pane_id = str(os.environ.get("TMUX_PANE") or "").strip()
+    if pane_id and pane_exists(pane_id):
+        return pane_id
+    result = tmux("display-message", "-p", "#{pane_id}", check=False, capture=True)
+    resolved_pane_id = result.stdout.strip() if result.returncode == 0 else ""
+    if resolved_pane_id and pane_exists(resolved_pane_id):
+        return resolved_pane_id
+    return ""
 
 
 def _tmux_join_fields(*parts: str) -> str:

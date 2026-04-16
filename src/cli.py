@@ -25,9 +25,8 @@ from backend import (
     build_status,
     cancel_session,
     close_session,
+    create_session,
     current_session_id,
-    ensure_native_session,
-    ensure_session,
     latest_turn_summary,
     resolve_session_context,
     send_prompt,
@@ -64,13 +63,14 @@ from session.config import (
 from session.meta import load_history_entries, log_event, log_exception
 from session.ops import (
     attach_session,
-    expire_managed_sessions,
+    expire_sessions,
     list_sessions,
     session_exists,
 )
 from text_utils import default_session_name
 from tls import configure_tls_runtime
 from tmux.bridge import bridge_keys, bridge_read, bridge_type
+from tmux import current_pane_id, pane_exists
 from version import __version__
 
 
@@ -333,6 +333,29 @@ def _parse_notify_binding(value: Optional[str]) -> tuple[Optional[str], Optional
     return provider, target
 
 
+def _resolve_notify_target(
+    provider: Optional[str], target: Optional[str]
+) -> Optional[str]:
+    normalized_provider = str(provider or "").strip()
+    normalized_target = str(target or "").strip()
+    if normalized_provider != "tmux-bridge" or not normalized_target:
+        return target
+    if normalized_target.lower() == "self":
+        pane_id = current_pane_id()
+        if not pane_id:
+            raise OrcheError(
+                "--notify tmux:self requires running inside a live tmux pane"
+            )
+        return f"pane:{pane_id}"
+    if normalized_target.startswith("%"):
+        if not pane_exists(normalized_target):
+            raise OrcheError(
+                f"--notify tmux:{normalized_target} requires a live tmux pane target"
+            )
+        return f"pane:{normalized_target}"
+    return target
+
+
 def _format_click_message(exc: click.ClickException) -> str:
     message = getattr(exc, "message", "") or ""
     match = _UNKNOWN_COMMAND.search(message)
@@ -503,24 +526,19 @@ def _open_session(
         raise OrcheError(
             f"Session {session} already exists. Use 'orche attach {session}' or choose a different --name."
         )
+    if cli_args:
+        raise OrcheError(
+            "open does not support raw agent CLI args. Use the session flow."
+        )
     notify_to, notify_target = _parse_notify_binding(notify)
-    if cli_args and notify_to:
-        raise OrcheError("open does not support combining --notify with raw agent args")
-    if notify_to:
-        pane_id = ensure_session(
-            session,
-            cwd.resolve(),
-            agent,
-            notify_to=notify_to,
-            notify_target=notify_target,
-        )
-    else:
-        pane_id = ensure_native_session(
-            session,
-            cwd.resolve(),
-            agent,
-            cli_args=cli_args,
-        )
+    notify_target = _resolve_notify_target(notify_to, notify_target)
+    pane_id = create_session(
+        session,
+        cwd.resolve(),
+        agent,
+        notify_to=notify_to,
+        notify_target=notify_target,
+    )
     append_action_history(session, cwd.resolve(), agent, "open", pane_id=pane_id)
     return session, pane_id
 
@@ -567,7 +585,7 @@ def main_callback(
         "_notify-discord",
         "watchdog-loop-internal",
     } and shutil.which("tmux"):
-        expire_managed_sessions()
+        expire_sessions()
     if version:
         console.print(f"orche {__version__}")
         raise typer.Exit()
@@ -689,7 +707,7 @@ def open_session(
     prompt: Optional[str] = typer.Option(
         None,
         "--prompt",
-        help="Prompt text to send immediately after opening a managed session.",
+        help="Prompt text to send immediately after opening a session.",
     ),
 ) -> None:
     try:

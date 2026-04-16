@@ -14,16 +14,13 @@ from runtime.agent import (
     append_action_history,
     apply_runtime_to_meta,
     ensure_agent_running,
-    ensure_native_agent_running,
     ensure_pane,
     get_agent,
     is_agent_running,
-    native_cli_args_from_meta,
     prepare_managed_runtime,
     runtime_home_from_meta,
     runtime_home_managed_from_meta,
     runtime_label_from_meta,
-    session_launch_mode,
     wait_for_agent_ready,
     wait_for_managed_startup_ready,
 )
@@ -41,7 +38,7 @@ from session import (
     _read_notify_binding,
     build_notify_binding,
     load_meta,
-    managed_session_last_event_at,
+    session_last_event_at,
     managed_session_ttl_seconds,
     remove_meta,
     save_meta,
@@ -81,167 +78,149 @@ class AgentStartupBlockedError(OrcheError):
     pass
 
 
-def ensure_native_session(
-    session: str, cwd: Path, agent: str, *, cli_args: Sequence[str] = ()
+def _notify_discord_channel_id(notify_binding: Dict[str, str]) -> str:
+    if notify_binding.get("provider") == "discord":
+        return str(notify_binding.get("target") or "").strip()
+    return ""
+
+
+def _resolve_runtime(
+    *,
+    plugin,
+    session: str,
+    cwd: Path,
+    existing_meta: Dict[str, Any],
+    discord_channel_id: str,
+) -> Tuple[AgentRuntime, str, bool]:
+    existing_runtime_home = runtime_home_from_meta(existing_meta)
+    if existing_runtime_home:
+        runtime_home_managed = runtime_home_managed_from_meta(existing_meta)
+        return (
+            AgentRuntime(
+                home=existing_runtime_home,
+                managed=runtime_home_managed,
+                label=runtime_label_from_meta(existing_meta, plugin),
+            ),
+            existing_runtime_home,
+            runtime_home_managed,
+        )
+    runtime = prepare_managed_runtime(
+        plugin, session, cwd=cwd, discord_channel_id=discord_channel_id
+    )
+    return runtime, runtime.home, True
+
+
+def _parent_session_from_notify(
+    *, tmux_mode: str, notify_binding: Dict[str, str]
 ) -> str:
-    cwd = cwd.resolve()
-    plugin = get_agent(agent)
-    existing_meta = load_meta(session)
-    existing_cwd = (
-        Path(str(existing_meta.get("cwd") or "")).resolve()
-        if existing_meta.get("cwd")
-        else None
-    )
-    if existing_cwd is not None and existing_cwd != cwd:
-        raise OrcheError(
-            f"Session {session} is already bound to cwd={existing_cwd}. Use the same --cwd or close the session and create a new one."
-        )
-    existing_agent = str(existing_meta.get("agent") or "").strip()
-    if existing_agent and existing_agent != plugin.name:
-        raise OrcheError(
-            f"Session {session} is already bound to agent={existing_agent}. Close the session and create a new one for a different agent."
-        )
-    if existing_meta and session_launch_mode(existing_meta) != "native":
-        raise OrcheError(
-            f"Session {session} is already managed by orche open. Use orche open without raw agent args for managed sessions, or close the session and recreate it."
-        )
-    provided_cli_args = [str(value) for value in cli_args]
-    existing_cli_args = native_cli_args_from_meta(existing_meta)
-    if existing_meta and provided_cli_args and provided_cli_args != existing_cli_args:
-        raise OrcheError(
-            f"Session {session} is already bound to native args={existing_cli_args!r}. Use the same shortcut args or close the session and create a new one."
-        )
-    resolved_cli_args = existing_cli_args or provided_cli_args
-    pane_id = ensure_pane(session, cwd, agent)
-    pane_id = ensure_native_agent_running(
-        plugin, session, cwd, pane_id, cli_args=resolved_cli_args
-    )
-    meta = load_meta(session)
-    meta.update(
-        {
-            "backend": BACKEND,
-            "session": session,
-            "cwd": str(cwd),
-            "agent": agent,
-            "pane_id": pane_id,
-            "launch_mode": "native",
-            "native_cli_args": list(resolved_cli_args),
-            "last_seen_at": time.time(),
-            "runtime_home": "",
-            "runtime_home_managed": False,
-            "runtime_label": "",
-            "codex_home": "",
-            "codex_home_managed": False,
-            "parent_session": "",
-            "last_event_at": 0.0,
-            "last_event_source": "",
-            "expires_after_seconds": 0,
-        }
-    )
-    for key in (
-        "discord_channel_id",
-        "discord_session",
-        "notify_routes",
-        "notify_binding",
+    target = str(notify_binding.get("target") or "").strip()
+    if (
+        tmux_mode == "inline-pane"
+        and notify_binding.get("provider") == "tmux-bridge"
+        and target
+        and not target.startswith("pane:")
     ):
-        meta.pop(key, None)
-    save_meta(session, meta)
-    update_runtime_config(
-        session=session,
-        cwd=cwd,
-        agent=agent,
-        pane_id=pane_id,
-        tmux_session=str(meta.get("tmux_session") or ""),
-        runtime_home="",
-        runtime_home_managed=False,
-        runtime_label="",
-    )
-    return pane_id
+        return target
+    return ""
 
 
-def ensure_session(
+def _load_session_context(
+    session: str,
+) -> Tuple[Path, str, Dict[str, Any], Dict[str, str]]:
+    existing_meta = load_meta(session)
+    if not existing_meta:
+        raise OrcheError(f"Unknown session: {session}")
+    raw_cwd = str(existing_meta.get("cwd") or "").strip()
+    agent = str(existing_meta.get("agent") or "").strip()
+    if not raw_cwd or not agent:
+        raise OrcheError(
+            f"Session {session} is missing cwd/agent context; open it first"
+        )
+    notify_binding = _read_notify_binding(existing_meta)
+    return Path(raw_cwd).resolve(), agent, existing_meta, notify_binding
+
+
+def create_session(
     session: str,
     cwd: Path,
     agent: str,
     *,
-    approve_all: bool = False,
-    runtime_home: Optional[str] = None,
-    codex_home: Optional[str] = None,
     notify_to: Optional[str] = None,
     notify_target: Optional[str] = None,
 ) -> str:
+    if load_meta(session):
+        raise OrcheError(
+            f"Session {session} already exists. Use 'orche attach {session}' or choose a different --name."
+        )
     cwd = cwd.resolve()
     plugin = get_agent(agent)
-    existing_meta = load_meta(session)
-    if existing_meta and session_launch_mode(existing_meta) != "managed":
-        raise OrcheError(
-            f"Session {session} is already bound to native open mode. Reuse it through orche open with the same raw agent args, or close it and recreate it."
-        )
-    existing_cwd = (
-        Path(str(existing_meta.get("cwd") or "")).resolve()
-        if existing_meta.get("cwd")
-        else None
-    )
-    if existing_cwd is not None and existing_cwd != cwd:
-        raise OrcheError(
-            f"Session {session} is already bound to cwd={existing_cwd}. Use the same --cwd or close the session and create a new one."
-        )
-    existing_agent = str(existing_meta.get("agent") or "").strip()
-    if existing_agent and existing_agent != plugin.name:
-        raise OrcheError(
-            f"Session {session} is already bound to agent={existing_agent}. Close the session and create a new one for a different agent."
-        )
-    existing_notify_binding = _read_notify_binding(existing_meta)
-    if (not notify_to or not notify_target) and not existing_notify_binding:
-        raise OrcheError("managed sessions require both notify_to and notify_target")
-    provided_notify_binding = (
+    notify_binding = (
         build_notify_binding(notify_to, notify_target)
         if notify_to and notify_target
-        else existing_notify_binding
+        else {}
     )
-    if (
-        existing_meta
-        and provided_notify_binding != existing_notify_binding
-        and existing_notify_binding
-    ):
-        raise OrcheError(
-            f"Session {session} is already bound to notify_to={existing_notify_binding['provider']} notify_target={existing_notify_binding['target']}. Use the same notify binding or close the session and create a new one."
-        )
-    resolved_notify_binding = existing_notify_binding or provided_notify_binding
-    resolved_discord_channel_id = (
-        resolved_notify_binding.get("target")
-        if resolved_notify_binding.get("provider") == "discord"
-        else ""
+    runtime, resolved_runtime_home, runtime_home_managed = _resolve_runtime(
+        plugin=plugin,
+        session=session,
+        cwd=cwd,
+        existing_meta={},
+        discord_channel_id=_notify_discord_channel_id(notify_binding),
     )
-    requested_runtime_home = runtime_home or codex_home
-    managed_runtime_home = False
-    if requested_runtime_home:
-        runtime = AgentRuntime(
-            home=str(requested_runtime_home), managed=False, label=plugin.runtime_label
-        )
-        resolved_runtime_home = str(requested_runtime_home)
-    elif runtime_home_from_meta(existing_meta):
-        resolved_runtime_home = runtime_home_from_meta(existing_meta)
-        managed_runtime_home = runtime_home_managed_from_meta(existing_meta)
-        runtime = AgentRuntime(
-            home=resolved_runtime_home,
-            managed=managed_runtime_home,
-            label=runtime_label_from_meta(existing_meta, plugin),
-        )
-    else:
-        runtime = prepare_managed_runtime(
-            plugin, session, cwd=cwd, discord_channel_id=resolved_discord_channel_id
-        )
-        resolved_runtime_home = runtime.home
-        managed_runtime_home = True
+    return _start_or_restore_session(
+        session=session,
+        cwd=cwd,
+        agent=agent,
+        plugin=plugin,
+        existing_meta={},
+        notify_binding=notify_binding,
+        runtime=runtime,
+        resolved_runtime_home=resolved_runtime_home,
+        runtime_home_managed=runtime_home_managed,
+    )
+
+
+def ensure_session(session: str) -> str:
+    cwd, agent, existing_meta, notify_binding = _load_session_context(session)
+    plugin = get_agent(agent)
+    runtime, resolved_runtime_home, runtime_home_managed = _resolve_runtime(
+        plugin=plugin,
+        session=session,
+        cwd=cwd,
+        existing_meta=existing_meta,
+        discord_channel_id=_notify_discord_channel_id(notify_binding),
+    )
+    return _start_or_restore_session(
+        session=session,
+        cwd=cwd,
+        agent=agent,
+        plugin=plugin,
+        existing_meta=existing_meta,
+        notify_binding=notify_binding,
+        runtime=runtime,
+        resolved_runtime_home=resolved_runtime_home,
+        runtime_home_managed=runtime_home_managed,
+    )
+
+
+def _start_or_restore_session(
+    *,
+    session: str,
+    cwd: Path,
+    agent: str,
+    plugin,
+    existing_meta: Dict[str, Any],
+    notify_binding: Dict[str, str],
+    runtime: AgentRuntime,
+    resolved_runtime_home: str,
+    runtime_home_managed: bool,
+) -> str:
+    resolved_discord_channel_id = _notify_discord_channel_id(notify_binding)
     tmux_mode = str(existing_meta.get("tmux_mode") or "").strip() or "dedicated-session"
     host_pane_id = str(existing_meta.get("host_pane_id") or "").strip()
     tmux_host_session = str(existing_meta.get("tmux_host_session") or "").strip()
-    parent_session = (
-        str(resolved_notify_binding.get("target") or "").strip()
-        if tmux_mode == "inline-pane"
-        and str(resolved_notify_binding.get("provider") or "").strip() == "tmux-bridge"
-        else ""
+    parent_session = _parent_session_from_notify(
+        tmux_mode=tmux_mode,
+        notify_binding=notify_binding,
     )
     pane_id = ensure_pane(
         session,
@@ -259,7 +238,6 @@ def ensure_session(
             "cwd": str(cwd),
             "agent": agent,
             "pane_id": pane_id,
-            "launch_mode": "managed",
             "tmux_mode": tmux_mode,
             "host_pane_id": host_pane_id,
             "tmux_host_session": tmux_host_session,
@@ -272,14 +250,13 @@ def ensure_session(
     )
     apply_runtime_to_meta(meta, agent=agent, runtime=runtime)
     for key in (
-        "native_cli_args",
         "discord_channel_id",
         "discord_session",
         "notify_routes",
     ):
         meta.pop(key, None)
-    if resolved_notify_binding:
-        meta["notify_binding"] = resolved_notify_binding
+    if notify_binding:
+        meta["notify_binding"] = notify_binding
     save_meta(session, meta)
     wait_for_startup = False
     if plugin.name in {"claude", "codex"} and runtime.managed:
@@ -300,7 +277,6 @@ def ensure_session(
         session,
         cwd,
         pane_id,
-        approve_all=approve_all,
         runtime=runtime,
         discord_channel_id=resolved_discord_channel_id,
     )
@@ -316,7 +292,7 @@ def ensure_session(
         pane_id=pane_id,
         tmux_session=str(load_meta(session).get("tmux_session") or ""),
         runtime_home=resolved_runtime_home,
-        runtime_home_managed=managed_runtime_home,
+        runtime_home_managed=runtime_home_managed,
         runtime_label=runtime.label,
     )
     return pane_id
@@ -328,26 +304,14 @@ def send_prompt(
     agent: str,
     prompt: str,
     *,
-    approve_all: bool = False,
     pane_id: str = "",
 ) -> str:
     plugin = get_agent(agent)
     resolved_pane_id = str(pane_id or "").strip()
-    meta = load_meta(session)
     if not resolved_pane_id:
-        resolved_pane_id = (
-            ensure_native_session(
-                session, cwd, agent, cli_args=native_cli_args_from_meta(meta)
-            )
-            if session_launch_mode(meta) == "native"
-            else ensure_session(session, cwd, agent, approve_all=approve_all)
-        )
+        resolved_pane_id = ensure_session(session)
     meta = load_meta(session)
-    wait_for_ack = (
-        plugin.name == "claude"
-        and runtime_home_managed_from_meta(meta)
-        and session_launch_mode(meta) != "native"
-    )
+    wait_for_ack = plugin.name == "claude" and runtime_home_managed_from_meta(meta)
     meta["pending_turn"] = {
         "turn_id": uuid.uuid4().hex[:12],
         "prompt": prompt,
@@ -476,7 +440,7 @@ def build_status(session: str) -> Dict[str, Any]:
         "notify_binding": _read_notify_binding(meta),
         "parent_session": session_parent(meta),
         "child_count": len(session_children(session, live_only=True)),
-        "last_event_at": managed_session_last_event_at(meta),
+        "last_event_at": session_last_event_at(meta),
         "ttl_seconds": int(
             meta.get("expires_after_seconds") or managed_session_ttl_seconds()
         ),

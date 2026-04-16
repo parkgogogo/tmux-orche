@@ -52,7 +52,6 @@ class AgentPlugin(ABC):
         runtime: AgentRuntime,
         session: str,
         discord_channel_id: str | None,
-        approve_all: bool,
     ) -> str:
         raise NotImplementedError
 
@@ -65,10 +64,6 @@ class AgentPlugin(ABC):
     @abstractmethod
     def capture_has_ready_surface(self, capture: str, cwd: Path) -> bool:
         raise NotImplementedError
-
-    def native_launch_args(self, *, cwd: Path, cli_args: Sequence[str]) -> list[str]:
-        _ = cwd
-        return [str(value) for value in cli_args]
 
     def command_tokens(self) -> list[str]:
         return [self.name]

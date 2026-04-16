@@ -25,17 +25,11 @@ def tmux_session_name(session: str) -> str:
     return f"{TMUX_SESSION}-{session_key(session)}"
 
 
-def session_launch_mode(meta: Mapping[str, Any]) -> str:
-    return str(meta.get("launch_mode") or "").strip() or "managed"
-
-
 def session_parent(meta: Mapping[str, Any]) -> str:
     return str(meta.get("parent_session") or "").strip()
 
 
-def managed_session_last_event_at(
-    meta: Mapping[str, Any], *, default: float = 0.0
-) -> float:
+def session_last_event_at(meta: Mapping[str, Any], *, default: float = 0.0) -> float:
     for value in (
         meta.get("last_event_at"),
         meta.get("updated_at"),
@@ -56,7 +50,7 @@ def touch_session_event(session: str, *, source: str = "") -> Dict[str, Any]:
         return {}
     with session_lock(session_name):
         meta = load_meta(session_name)
-        if not meta or session_launch_mode(meta) != "managed":
+        if not meta:
             return {}
         timestamp = time.time()
         meta["last_event_at"] = timestamp
@@ -114,9 +108,9 @@ def _session_has_live_parent(meta: Mapping[str, Any]) -> bool:
     return bool(parent_meta and session_metadata_is_live(parent, parent_meta))
 
 
-def _managed_session_expires_at(meta: Mapping[str, Any]) -> float:
+def _session_expires_at(meta: Mapping[str, Any]) -> float:
     ttl = int(meta.get("expires_after_seconds") or managed_session_ttl_seconds())
-    last_event_at = managed_session_last_event_at(meta)
+    last_event_at = session_last_event_at(meta)
     return 0.0 if ttl <= 0 or last_event_at <= 0 else last_event_at + ttl
 
 
@@ -150,7 +144,7 @@ def session_exists(session: str) -> bool:
     )
 
 
-def expire_managed_sessions(
+def expire_sessions(
     *, now: Optional[float] = None, close_session_tree_fn=None
 ) -> List[str]:
     timestamp = time.time() if now is None else now
@@ -159,14 +153,14 @@ def expire_managed_sessions(
     expired_roots: List[str] = []
     for payload in _iter_meta_payloads():
         session = str(payload.get("session") or "").strip()
-        if not session or session_launch_mode(payload) != "managed":
+        if not session:
             continue
         if not session_metadata_is_live(session, payload):
             remove_meta(session)
             continue
         if _session_has_live_parent(payload):
             continue
-        expires_at = _managed_session_expires_at(payload)
+        expires_at = _session_expires_at(payload)
         if expires_at > 0.0 and expires_at <= timestamp:
             expired_roots.append(session)
     if close_session_tree_fn is None:
@@ -176,7 +170,7 @@ def expire_managed_sessions(
         try:
             close_session_tree_fn(session, reason="ttl-expired")
         except Exception as exc:
-            log_exception("managed_session.expire_close_failed", exc, session=session)
+            log_exception("session.expire_close_failed", exc, session=session)
             continue
         closed.append(session)
     return closed

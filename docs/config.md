@@ -126,4 +126,4 @@ Example `config.json`:
 
 ## Managed Codex Runtime Notes
 
-Managed Codex runtimes keep using an isolated `CODEX_HOME`; `orche` also writes `check_for_update_on_startup = false` and `[notice].hide_rate_limit_model_nudge = true` there to avoid startup update checks and model-switch nudges interfering with managed sessions.
+Managed Codex runtimes keep using an isolated `CODEX_HOME`; `orche` also writes `check_for_update_on_startup = false` and `[notice].hide_rate_limit_model_nudge = true` there to avoid startup update checks and model-switch nudges interfering with session startup.

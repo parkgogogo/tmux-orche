@@ -62,23 +62,22 @@ When an agent delegates work to another agent, the hard part isn't starting the 
 # 1. Install
 curl -fsSL https://github.com/parkgogogo/tmux-orche/raw/main/install.sh | sh
 
-# 2. Resolve current tmux session (run this inside tmux)
-current_session="$(orche whoami)"
-
-# 3. Open a worker, delegate a task, and walk away
+# 2. Open a worker, delegate a task, and walk away
 orche open \
   --cwd ./my-repo \
   --agent codex \
   --name my-worker \
-  --notify "tmux:${current_session}" \
+  --notify tmux:self \
   --prompt "refactor the auth module"
 
-# 4. The result routes back to your session when done.
+# 3. The result routes back to your current tmux pane when done.
 #    Meanwhile, check on progress anytime:
 orche status my-worker        # is it alive? turn pending?
 orche read my-worker          # peek at terminal output
 orche attach my-worker        # take over the live terminal
 ```
+
+If you need to target a specific pane explicitly, use `--notify tmux:%12`. Use `tmux:<session>` only when you intentionally want to route back to another named `orche` session.
 
 ## Usage Scenarios
 
@@ -243,7 +242,7 @@ curl -fsSL https://raw.githubusercontent.com/parkgogogo/tmux-orche/main/skills/o
 orche config set discord.bot-token "$BOT_TOKEN"
 orche config set discord.webhook-url "$WEBHOOK_URL"
 
-# Adjust managed session idle TTL (default 43200s, <=0 disables expiry)
+# Adjust session idle TTL (default 43200s, <=0 disables expiry)
 orche config set managed.ttl-seconds 1800
 
 # Override the Claude CLI command

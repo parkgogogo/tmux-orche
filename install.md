@@ -215,28 +215,20 @@ python3 -m compileall src
 
 The fastest useful validation is to open a real session and inspect it.
 
-### Managed session
+### Session
 
 ```bash
-orche open --cwd /path/to/repo --agent codex --name repo-worker --notify tmux:repo-reviewer
-orche prompt repo-worker "reply with READY and nothing else"
+orche open --cwd /path/to/repo --agent codex --name repo-worker --notify tmux:self --prompt "reply with READY and nothing else"
 orche status repo-worker
 orche read repo-worker --lines 80
 ```
 
-### Native session
-
-Use native mode only if you need raw agent CLI args:
-
-```bash
-orche open --cwd /path/to/repo --agent claude -- --print --help
-```
-
 Rules:
 
-- raw agent args must come after `--`
-- native sessions do not take `--notify`
-- managed sessions are the default recommendation
+- raw agent CLI args are not supported on `open`
+- prefer `tmux:self` when the result should return to the current tmux pane
+- use `tmux:%12` when you need to target a specific live pane explicitly
+- use `tmux:<session>` only when you intentionally want to route back to another named `orche` session
 
 ## 5. How To Take Over Mid-Flight
 
@@ -265,13 +257,18 @@ Notify is explicit.
 
 `orche open --notify` accepts exactly one value:
 
+- `tmux:self`
+- `tmux:%<pane-id>`
 - `tmux:<target-session>`
 - `discord:<channel-id>`
+- `telegram:<chat-id>`
 
 Examples:
 
 ```bash
 orche open --cwd /repo --agent codex --name repo-reviewer --notify discord:123456789012345678
+orche open --cwd /repo --agent codex --name repo-worker --notify tmux:self
+orche open --cwd /repo --agent codex --name repo-worker --notify tmux:%12
 orche open --cwd /repo --agent codex --name repo-worker --notify tmux:repo-reviewer
 ```
 
@@ -350,6 +347,8 @@ Examples:
 
 ```bash
 orche open --cwd /repo --agent codex --notify discord:123456789012345678
+orche open --cwd /repo --agent codex --notify tmux:self
+orche open --cwd /repo --agent codex --notify tmux:%12
 orche open --cwd /repo --agent codex --notify tmux:repo-reviewer
 ```
 
